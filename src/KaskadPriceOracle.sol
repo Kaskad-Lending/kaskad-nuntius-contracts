@@ -55,6 +55,17 @@ contract KaskadPriceOracle {
     uint256 public constant CIRCUIT_BREAKER_STALENESS = 4 hours;
     uint8 public constant RESUME_QUORUM_MULTIPLIER = 2;
 
+    /// @notice Reject a signed update whose enclave-authoritative
+    ///         `timestamp` (median of per-source server_time) is more than
+    ///         `MAX_FUTURE_SKEW` ahead of `block.timestamp`. A wide 2 h
+    ///         cap accommodates the Kasplex L2 / Kaspa upstream clock
+    ///         volatility (block.timestamp can run hours ahead of real
+    ///         wall clock during chain hiccups — the cap widens with
+    ///         it) while still blocking a bug / malformed signature
+    ///         that otherwise would freeze the monotonic-timestamp
+    ///         guard for years.
+    uint256 public constant MAX_FUTURE_SKEW = 2 hours;
+
     // ─── State ───────────────────────────────────────────────────────────
 
     /// @notice Grow-only set of enclave-attested signing addresses. A signer
@@ -119,6 +130,7 @@ contract KaskadPriceOracle {
     error ResumeRequiresHigherQuorum(uint8 provided, uint8 required);
     error NotAdmin();
     error ZeroAddress();
+    error FutureTimestamp(uint256 provided, uint256 maxAllowed);
 
     // ─── Constructor ─────────────────────────────────────────────────────
 
@@ -233,6 +245,17 @@ contract KaskadPriceOracle {
         uint8 minReq
     ) internal view {
         PriceData storage current = latestPrices[assetId];
+
+        // Future-timestamp cap: prevents a single malformed/buggy
+        // signature with a far-future `timestamp` from poisoning the
+        // monotonic guard below and freezing the asset for years. Cap
+        // grows with `block.timestamp`, so if the L2 chain clock
+        // legitimately jumps forward the cap widens along with it —
+        // legit signed prices (from exchange server_time ≈ real wall
+        // clock) still pass. Only rejects timestamps that run > 2 h
+        // AHEAD of on-chain time.
+        uint256 maxAllowed = block.timestamp + MAX_FUTURE_SKEW;
+        if (timestamp > maxAllowed) revert FutureTimestamp(timestamp, maxAllowed);
 
         if (current.signedTimestamp > 0 && timestamp <= current.signedTimestamp) {
             revert StalePrice(timestamp, current.signedTimestamp);

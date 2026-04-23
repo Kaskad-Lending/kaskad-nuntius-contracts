@@ -162,46 +162,31 @@ contract SecurityAuditTest is Test {
     //          src/types.rs:13-15
     // ═══════════════════════════════════════════════════════════════════════
 
-    function test_POC_future_timestamp_freezes_asset_permanently() public {
-        // A legit update arrives with sane timestamp.
+    /// REGRESSION GUARD for CRIT-2. The 2-hour future-timestamp cap in
+    /// `_checkFreshnessAndBreaker` rejects a year-2100 timestamp before
+    /// it can poison the monotonic `signedTimestamp` guard. Without the
+    /// cap a single errant signature would freeze the asset for decades.
+    function test_REGRESSION_future_timestamp_cap_blocks_freeze() public {
+        // Legit baseline update.
         _submit(oracle, ETH_USD, 200000000000, T0, 3);
 
-        // Then — due to host clock manipulation, enclave bug, or compromised
-        // signing path — a single signature is created with a year-2100
-        // timestamp. The payload is otherwise valid.
+        // Attempted year-2100 timestamp — reverts with FutureTimestamp.
         uint256 farFuture = 4_102_444_800; // 2100-01-01 UTC
-        _submit(oracle, ETH_USD, 200000000000, farFuture, 3);
-
-        // Advance on-chain time one whole day.
-        vm.warp(T0 + 1 days);
-
-        // Every legitimate update is now locked out until year 2100.
-        bytes memory sig = _sign(signerPk, ETH_USD, 210000000000, block.timestamp, 3, SRC_HASH);
+        uint256 maxAllowed = block.timestamp + oracle.MAX_FUTURE_SKEW();
+        bytes memory sig = _sign(signerPk, ETH_USD, 200000000000, farFuture, 3, SRC_HASH);
         vm.expectRevert(
             abi.encodeWithSelector(
-                KaskadPriceOracle.StalePrice.selector,
-                block.timestamp,
-                farFuture
+                KaskadPriceOracle.FutureTimestamp.selector,
+                farFuture,
+                maxAllowed
             )
         );
-        oracle.updatePrice(ETH_USD, 210000000000, block.timestamp, 3, SRC_HASH, sig);
+        oracle.updatePrice(ETH_USD, 200000000000, farFuture, 3, SRC_HASH, sig);
 
-        // Even after the resume window opens the staleness ordering still
-        // bites (resume only touches price-change cap, not timestamp order).
-        vm.warp(T0 + 30 days);
-        sig = _sign(signerPk, ETH_USD, 210000000000, block.timestamp, 6, SRC_HASH);
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                KaskadPriceOracle.StalePrice.selector,
-                block.timestamp,
-                farFuture
-            )
-        );
-        oracle.updatePrice(ETH_USD, 210000000000, block.timestamp, 6, SRC_HASH, sig);
-
-        // Recovery requires re-deploying the oracle. Existing tests at
-        // contracts/test/KaskadPriceOracle.t.sol:384 explicitly assert that
-        // "future timestamps are allowed" — this is the documented hole.
+        // Next legit update still accepted — no freeze.
+        _submit(oracle, ETH_USD, 210000000000, T0 + 1, 3);
+        (uint256 p, , , ) = oracle.getLatestPrice(ETH_USD);
+        assertEq(p, 210000000000);
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -299,16 +284,46 @@ contract SecurityAuditTest is Test {
         assertEq(roundId, 3); // Three updates in three seconds — no rate limit.
     }
 
-    function test_POC_no_future_timestamp_cap() public {
-        // A signature with ts = now + 1 year is accepted without complaint.
+    /// REGRESSION GUARD. Future-timestamp cap rejects a signed update
+    /// more than `MAX_FUTURE_SKEW` ahead of `block.timestamp`. A ts =
+    /// now + 1 year signature must revert — it used to be silently
+    /// accepted.
+    function test_REGRESSION_future_timestamp_cap_rejects_year_ahead() public {
         uint256 farFuture = T0 + 365 days;
-        _submit(oracle, ETH_USD, 200000000000, farFuture, 5);
+        uint256 maxAllowed = block.timestamp + oracle.MAX_FUTURE_SKEW();
+        bytes memory sig = _sign(signerPk, ETH_USD, 200000000000, farFuture, 5, SRC_HASH);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                KaskadPriceOracle.FutureTimestamp.selector,
+                farFuture,
+                maxAllowed
+            )
+        );
+        oracle.updatePrice(ETH_USD, 200000000000, farFuture, 5, SRC_HASH, sig);
+    }
 
-        (, uint256 recordedBlockTs, , ) = oracle.getLatestPrice(ETH_USD);
-        assertEq(recordedBlockTs, T0); // block.timestamp of submission, not the signed ts.
+    /// REGRESSION GUARD. A signed update exactly at the cap (now + 2h)
+    /// is accepted; one second past the cap reverts.
+    function test_REGRESSION_future_timestamp_cap_boundary() public {
+        uint256 skew = oracle.MAX_FUTURE_SKEW();
 
-        // And because signedTimestamp is monotonic, this PERMANENTLY freezes
-        // the asset (combines with CRIT-2 above).
+        // Exactly at cap — accepted.
+        _submit(oracle, ETH_USD, 200000000000, T0 + skew, 5);
+
+        // Advance block time to allow a monotonically-greater signed ts
+        // beyond the cap of the new now.
+        vm.warp(T0 + 100);
+        uint256 justPast = block.timestamp + skew + 1;
+        uint256 maxAllowed = block.timestamp + skew;
+        bytes memory sig = _sign(signerPk, ETH_USD, 200000000000, justPast, 5, SRC_HASH);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                KaskadPriceOracle.FutureTimestamp.selector,
+                justPast,
+                maxAllowed
+            )
+        );
+        oracle.updatePrice(ETH_USD, 200000000000, justPast, 5, SRC_HASH, sig);
     }
 
     // ═══════════════════════════════════════════════════════════════════════

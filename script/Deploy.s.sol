@@ -15,11 +15,18 @@ import {NitroProver} from "nitro-prover/NitroProver.sol";
 ///         `DeployLocal` to swap the verifier for a mock on anvil.
 ///
 /// Required env:
-///   DEPLOYER_KEY         — uint256 private key (optional if `--private-key` passed)
-///   ORACLE_ADMIN         — address with `registerAssets` authority
-///   ATTESTATION_DOC      — raw Nitro attestation bytes (CBOR COSE_Sign1)
-///   EXPECTED_PCR1        — bytes32 kernel hash baked into verifier
-///   EXPECTED_PCR2        — bytes32 application hash baked into verifier
+///   DEPLOYER_KEY              — uint256 private key (optional if `--private-key` passed)
+///   ORACLE_ADMIN              — address with `registerAssets` authority. MUST differ
+///                                from the deployer when DEPLOYER_KEY is set (audit D-3).
+///   ATTESTATION_DOC           — raw Nitro attestation bytes (CBOR COSE_Sign1)
+///   EXPECTED_PCR1             — bytes32 kernel hash. MUST be non-zero (audit D-2).
+///   EXPECTED_PCR2             — bytes32 application hash. MUST be non-zero (audit D-2).
+///
+/// Optional env:
+///   EXPECTED_ENCLAVE_SIGNER   — address. When set, the script asserts the attestation
+///                                doc resolves to this signer (audit D-5: defends
+///                                against a substituted attestation doc that pins
+///                                an attacker-controlled signer).
 contract Deploy is Script {
     // ─── Hooks (overridden in DeployLocal) ────────────────────────────────
 
@@ -71,6 +78,43 @@ contract Deploy is Script {
         return pcr0;
     }
 
+    /// @notice Pre-flight env validation. Fails fast before any
+    ///         state-modifying tx so a misconfig is caught at the top
+    ///         of the script, not after partial deployment.
+    /// @dev    Virtual so DeployLocal can skip — local flow uses a mock
+    ///         verifier that doesn't take PCR1/PCR2.
+    function _validateEnv() internal virtual {
+        bytes32 expectedPCR1 = vm.envBytes32("EXPECTED_PCR1");
+        bytes32 expectedPCR2 = vm.envBytes32("EXPECTED_PCR2");
+        require(expectedPCR1 != bytes32(0), "EXPECTED_PCR1 == 0 (audit D-2): refusing to deploy a verifier that matches any kernel hash");
+        require(expectedPCR2 != bytes32(0), "EXPECTED_PCR2 == 0 (audit D-2): refusing to deploy a verifier that matches any application hash");
+
+        address admin = vm.envAddress("ORACLE_ADMIN");
+        uint256 key = vm.envOr("DEPLOYER_KEY", uint256(0));
+        if (key != 0) {
+            require(
+                admin != vm.addr(key),
+                "ORACLE_ADMIN must differ from DEPLOYER_KEY signer (audit D-3: hot-key + admin role on the same EOA collapses two security boundaries)"
+            );
+        }
+    }
+
+    /// @notice Optional binding: when `EXPECTED_ENCLAVE_SIGNER` env is
+    ///         set, assert the attestation doc resolves to that signer.
+    ///         Defends against an attacker who substitutes an
+    ///         alternate attestation doc with the same expected PCR0
+    ///         but a signer they control (audit D-5).
+    function _assertExpectedSigner(IAttestationVerifier verifier, bytes memory doc) internal virtual {
+        address expected = vm.envOr("EXPECTED_ENCLAVE_SIGNER", address(0));
+        if (expected == address(0)) return; // not enforced this run
+        (, , address actual) = verifier.verifyAttestation(doc);
+        require(
+            actual == expected,
+            "Attestation signer != EXPECTED_ENCLAVE_SIGNER (audit D-5): possible attestation-doc substitution"
+        );
+        console.log("EXPECTED_ENCLAVE_SIGNER bound:", expected);
+    }
+
     // ─── Static config (shared by prod + local) ───────────────────────────
 
     /// @notice Asset registration commitment. IDs are `keccak256(symbol)`
@@ -102,6 +146,9 @@ contract Deploy is Script {
     // ─── Entrypoint ───────────────────────────────────────────────────────
 
     function run() external {
+        // ─── Pre-flight env validation (fail fast before any state-modifying tx)
+        _validateEnv();
+
         uint256 key = vm.envOr("DEPLOYER_KEY", uint256(0));
         if (key != 0) {
             vm.startBroadcast(key);
@@ -120,6 +167,10 @@ contract Deploy is Script {
 
         // 4. Pin PCR0 — deployed oracle will only accept this image
         bytes32 pcr0 = _extractPCR0(verifier, attestationDoc);
+
+        // 4b. (Optional) bind to a specific expected signer — defends
+        //     against an attacker-substituted attestation doc.
+        _assertExpectedSigner(verifier, attestationDoc);
 
         // 5. Oracle
         address admin = vm.envAddress("ORACLE_ADMIN");

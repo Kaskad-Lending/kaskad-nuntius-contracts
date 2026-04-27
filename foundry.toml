@@ -5,6 +5,12 @@ libs = ["lib"]
 optimizer = true
 optimizer_runs = 1
 
+# KaskadRouter uses transient storage (EIP-1153) which lands in Cancun.
+# Pinning prevents (a) a future solc default flipping forward to a target
+# our chains don't support and (b) a stale CI flipping back to Shanghai
+# which would make `tstore`/`tload` invalid opcodes (audit F-13).
+evm_version = "cancun"
+
 # NitroProver remappings (Marlin attestation verification)
 remappings = [
     "forge-std/=lib/forge-std/src/",

@@ -2,43 +2,66 @@
   "chainId": 38836,
   "network": "Galleon Testnet",
   "rpc": "https://galleon-testnet.igralabs.com:8545",
-  "deployedAt": "2026-04-13",
+  "deployedAt": "2026-04-27",
 
   "attestation": {
-    "MockAttestationVerifier": "0xC1a59463E4d00dc08F146adF80E18DB807266DF1",
-    "_note": "Real Nitro verification blocked by Galleon block.timestamp drift (~4h > 3h AWS cert TTL). MockVerifier used on testnet until Igra fixes timestamp. Real Nitro stack (CertManager/NitroProver) remains deployed but inaccessible until chain catches up: CertManager 0x6E802C12Ebd69f541e7a204e041b22AF5e028624, NitroProver 0x5a0C8434A922837587B662C0adca63eab77D7F17, NitroAttestationVerifier 0x172AE0862965982dc1222ec9d836d116A60Bcc6c"
+    "MockAttestationVerifier": "0xA383576c53A894CAEA71EE99B9aD385b57EF4b85",
+    "_note": "Real Nitro verification blocked by Galleon block.timestamp drift (~3.5h > 3h AWS cert TTL) — chain runs hours ahead of real wall clock. MockVerifier used on testnet until Igra fixes upstream Kaspa timestamp. Real Nitro stack (CertManager/NitroProver) was deployed previously but inaccessible until chain catches up; addresses preserved under `legacy` below."
   },
 
   "teeOracle": {
-    "KaskadPriceOracle": "0xDfbB1E4323290e22Bf1c3ca3299094493F560292",
-    "expectedPCR0": "0x0000000000000000000000000000000000000000000000000000000000000001",
-    "enclaveSigner": "0x931acf64D84f743B598F1c1deDb0ABfC3f3Ea2A3"
+    "KaskadPriceOracle": "0x06289fDF08Df4259744fA726648A6B2c3dC014bE",
+    "expectedPCR0": "0x07fd2cd3f8fa2de6172b7041a97de58a7352e05a92e0eb80a7e90b9b670b7cec",
+    "enclaveSigner": "0xfecc4DFE2a57B26d97288301AaC9ce8c3f09FA69",
+    "admin": "0xe92cf3419E91EDBeAc9DD8eAC7728Df5DCe57A52",
+    "_note": "expectedPCR0 = keccak256('kaskad-oracle:local'). Real EIF PCR0 (08212536...) is what the live enclave reports but the oracle is bound to the mock-verifier constant for now. signerCount = 1 with the single live enclave signer registered."
   },
 
   "aggregators": {
-    "ETH/USD": "0xBC1f9F17e66fD5ec52a4B2fBAc164d0Ac7691596",
-    "BTC/USD": "0x5F3474623A59e425aaFD655b04493BE28fe65f5E",
-    "USDC/USD": "0xedd8a4363BA594101442CBc0f43F50c59922445c",
-    "KAS/USD": "0xC207275A7eDCC8C523ab38CD9D2D4F915543A989"
+    "ETH/USD":  "0x5CE3D0c65eC143645aB82D71535743646C140C2d",
+    "BTC/USD":  "0x324029CB27f67bd206cfe4D0c15CA85d9d9b4306",
+    "KAS/USD":  "0x67e109F78381daDF80cF3aC4dac9036Bbf70e91F",
+    "USDC/USD": "0xd0122913EbfcdEafB026b0ebB3fC5914eA8e849c",
+    "IGRA/USD": "0x165ac22D893Ba66b9FfC347F40f01bD695BbAd22"
   },
 
   "router": {
-    "KaskadRouter": "0x03cC53C082eccEF8640321268155B9f0C7923ab4"
+    "KaskadRouter": "0x03cC53C082eccEF8640321268155B9f0C7923ab4",
+    "_note": "Router still points at legacy oracle; redeploy when consumers (AaveOracle.setAssetSources) move to the new aggregators."
   },
 
   "integration": {
     "AaveOracle": "0xc1198A9d400306a0406fD3E3Ad67140b3D059f48",
     "AavePool": "0xA1D84fc43f7F2D803a2d64dbBa4A90A9A79E3F24",
     "PoolAddressesProvider": "0x9DB9797733FE5F734724Aa05D29Fa39563563Af5",
-    "_note": "IGRA and KSKD stay on MockPriceOracle"
+    "_note": "Aave config still points at legacy aggregators. setAssetSources([WETH, WBTC, USDC, WIKAS], [new aggregator addrs above]) needed for cutover. IGRA + KSKD stay on MockPriceOracle."
   },
 
   "tokens": {
-    "WETH": "0xB4129cEBD85bDEcdD775f539Ec8387619a0f1FAC",
-    "WBTC": "0x9dAc4c79bE2C541BE3584CE5244F3942554D6355",
-    "USDC": "0x32F59763c4b7F385DFC1DBB07742DaD4eeEccdb2",
+    "WETH":  "0xB4129cEBD85bDEcdD775f539Ec8387619a0f1FAC",
+    "WBTC":  "0x9dAc4c79bE2C541BE3584CE5244F3942554D6355",
+    "USDC":  "0x32F59763c4b7F385DFC1DBB07742DaD4eeEccdb2",
     "WIKAS": "0xA7CEd4eFE5C3aE0e5C26735559A77b1e38950a14",
-    "IGRA": "0x04443457b050BBaa195bb71Ef6CCDb519CcB1f0f",
-    "KSKD": "0x2d17780a59044D49FeEf0AA9cEaB1B6e3161aFf7"
+    "IGRA":  "0x04443457b050BBaa195bb71Ef6CCDb519CcB1f0f",
+    "KSKD":  "0x2d17780a59044D49FeEf0AA9cEaB1B6e3161aFf7"
+  },
+
+  "legacy": {
+    "_note": "Pre-2026-04-27 deployment. KaskadPriceOracle was pre-validSigner-refactor (no admin, no signerCount, single oracleSigner getter). Replaced when a fresh enclave signer required new MockVerifier hardcoded.",
+    "KaskadPriceOracle":         "0xDfbB1E4323290e22Bf1c3ca3299094493F560292",
+    "MockAttestationVerifier":   "0xC1a59463E4d00dc08F146adF80E18DB807266DF1",
+    "enclaveSigner":             "0x931acf64D84f743B598F1c1deDb0ABfC3f3Ea2A3",
+    "expectedPCR0":              "0x0000000000000000000000000000000000000000000000000000000000000001",
+    "aggregators": {
+      "ETH/USD":  "0xBC1f9F17e66fD5ec52a4B2fBAc164d0Ac7691596",
+      "BTC/USD":  "0x5F3474623A59e425aaFD655b04493BE28fe65f5E",
+      "USDC/USD": "0xedd8a4363BA594101442CBc0f43F50c59922445c",
+      "KAS/USD":  "0xC207275A7eDCC8C523ab38CD9D2D4F915543A989"
+    },
+    "nitro_stack_inaccessible_until_chain_clock_fix": {
+      "CertManager":               "0x6E802C12Ebd69f541e7a204e041b22AF5e028624",
+      "NitroProver":               "0x5a0C8434A922837587B662C0adca63eab77D7F17",
+      "NitroAttestationVerifier":  "0x172AE0862965982dc1222ec9d836d116A60Bcc6c"
+    }
   }
 }

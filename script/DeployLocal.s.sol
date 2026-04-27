@@ -47,4 +47,11 @@ contract DeployLocal is Deploy {
     {
         return LOCAL_PCR0;
     }
+
+    /// @notice Skip the prod env-validation gates (PCR1/PCR2 / admin-vs-deployer).
+    ///         DeployLocal uses a mock verifier with no PCR1/PCR2 inputs, and
+    ///         testnet flows routinely re-use the deployer key as admin.
+    function _validateEnv() internal pure override {
+        // intentional no-op — see Deploy._validateEnv NatSpec.
+    }
 }

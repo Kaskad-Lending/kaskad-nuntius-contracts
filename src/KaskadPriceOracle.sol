@@ -66,6 +66,16 @@ contract KaskadPriceOracle {
     ///         guard for years.
     uint256 public constant MAX_FUTURE_SKEW = 2 hours;
 
+    /// @notice Hard upper bound on the number of assets the admin may
+    ///         register in a single `registerAssets` call. The wipe loop
+    ///         iterates over the previous registered set, so without a
+    ///         cap a malicious or compromised admin could pre-load 5000+
+    ///         entries and turn every subsequent re-register into a
+    ///         block-gas-limit DoS (audit F-5). 32 is comfortably above
+    ///         realistic asset counts (Aave V3 mainnet runs 15-25) and
+    ///         keeps the wipe-loop bounded at ~32 SSTORE-to-zero refunds.
+    uint256 public constant MAX_ASSETS = 32;
+
     // ─── State ───────────────────────────────────────────────────────────
 
     /// @notice Grow-only set of enclave-attested signing addresses. A signer
@@ -131,6 +141,8 @@ contract KaskadPriceOracle {
     error NotAdmin();
     error ZeroAddress();
     error FutureTimestamp(uint256 provided, uint256 maxAllowed);
+    error TooManyAssets(uint256 provided, uint256 max);
+    error NoRoundData(bytes32 assetId, uint80 roundId);
 
     // ─── Constructor ─────────────────────────────────────────────────────
 
@@ -191,6 +203,7 @@ contract KaskadPriceOracle {
     ) external onlyAdmin {
         if (signerCount == 0) revert NoEnclaveRegistered();
         if (ids.length == 0) revert AssetsEmpty();
+        if (ids.length > MAX_ASSETS) revert TooManyAssets(ids.length, MAX_ASSETS);
         if (ids.length != minSources.length) revert MismatchedLengths();
 
         uint256 oldLen = _registeredAssetIds.length;
@@ -341,6 +354,13 @@ contract KaskadPriceOracle {
         returns (uint256 price, uint256 timestamp, uint8 numSources)
     {
         PriceData storage data = priceHistory[assetId][roundId];
+        // Chainlink convention: revert on a non-existent round rather
+        // than return a zero-value tuple (audit F-6). Downstream
+        // KaskadAggregatorV3.getRoundData / .getAnswer / .getTimestamp
+        // propagate this revert; consumers that previously read
+        // `answer = 0` as a "free" price now get a clear failure
+        // they must handle.
+        if (data.timestamp == 0) revert NoRoundData(assetId, roundId);
         return (data.price, data.timestamp, data.numSources);
     }
 

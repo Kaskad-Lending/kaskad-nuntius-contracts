@@ -2,27 +2,27 @@
   "chainId": 38836,
   "network": "Galleon Testnet",
   "rpc": "https://galleon-testnet.igralabs.com:8545",
-  "deployedAt": "2026-04-27",
+  "deployedAt": "2026-04-27T12:32Z",
 
   "attestation": {
-    "MockAttestationVerifier": "0xA383576c53A894CAEA71EE99B9aD385b57EF4b85",
+    "MockAttestationVerifier": "0xa3c832fe3728a987df175909f1e4a755ac30e218",
     "_note": "Real Nitro verification blocked by Galleon block.timestamp drift (~3.5h > 3h AWS cert TTL) — chain runs hours ahead of real wall clock. MockVerifier used on testnet until Igra fixes upstream Kaspa timestamp. Real Nitro stack (CertManager/NitroProver) was deployed previously but inaccessible until chain catches up; addresses preserved under `legacy` below."
   },
 
   "teeOracle": {
-    "KaskadPriceOracle": "0x06289fDF08Df4259744fA726648A6B2c3dC014bE",
+    "KaskadPriceOracle": "0x3e463027e6252d1cdde41622c1da5de34625174d",
     "expectedPCR0": "0x07fd2cd3f8fa2de6172b7041a97de58a7352e05a92e0eb80a7e90b9b670b7cec",
-    "enclaveSigner": "0xfecc4DFE2a57B26d97288301AaC9ce8c3f09FA69",
+    "enclaveSigner": "0xa41623b35a16751d7433d5d7bb93ebdb2b6e5fa2",
     "admin": "0xe92cf3419E91EDBeAc9DD8eAC7728Df5DCe57A52",
-    "_note": "expectedPCR0 = keccak256('kaskad-oracle:local'). Real EIF PCR0 (08212536...) is what the live enclave reports but the oracle is bound to the mock-verifier constant for now. signerCount = 1 with the single live enclave signer registered."
+    "_note": "expectedPCR0 = keccak256('kaskad-oracle:local'). Real EIF PCR0 from this build = 5b1de8e90cc54ce369bc35add62dc12b68df3860cab8e73b11866879ca3bbdd3dfb2e62c95021af292c1bd9ba05ae192 (read via aws s3 cp s3://kaskad-oracle-eif/pcr0.json). Contract bound to mock constant for now. New constants: MAX_FUTURE_SKEW=2h, MAX_ASSETS=32 (audit F-5 + C2)."
   },
 
   "aggregators": {
-    "ETH/USD":  "0x5CE3D0c65eC143645aB82D71535743646C140C2d",
-    "BTC/USD":  "0x324029CB27f67bd206cfe4D0c15CA85d9d9b4306",
-    "KAS/USD":  "0x67e109F78381daDF80cF3aC4dac9036Bbf70e91F",
-    "USDC/USD": "0xd0122913EbfcdEafB026b0ebB3fC5914eA8e849c",
-    "IGRA/USD": "0x165ac22D893Ba66b9FfC347F40f01bD695BbAd22"
+    "ETH/USD":  "0xc84170657d9165922ac9648b9621bbd32081ff19",
+    "BTC/USD":  "0x6e081b0de187b4d52e4e8cb87c41388729e2c17b",
+    "KAS/USD":  "0x30a5eab91285c835baeb0f9d6003a36694ffdd0f",
+    "USDC/USD": "0x92c9ea56a4bc7f62bd4160021043d114992302b5",
+    "IGRA/USD": "0x26f5b3af17f39afa6a60cc44a4c176ef49fb4f06"
   },
 
   "router": {

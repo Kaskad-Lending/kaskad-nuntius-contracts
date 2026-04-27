@@ -433,6 +433,92 @@ contract SecurityAuditTest is Test {
     }
 
     // ═══════════════════════════════════════════════════════════════════════
+    // F-5: registerAssets unbounded delete loop. Without a cap, a
+    //      compromised admin can pre-load thousands of asset ids and
+    //      every subsequent re-register loops over all of them, eating
+    //      block gas. MAX_ASSETS = 32 caps the wipe at 32 SSTORE-to-zero.
+    // ═══════════════════════════════════════════════════════════════════════
+
+    function test_REGRESSION_registerAssets_caps_at_32() public {
+        bytes32[] memory ids = new bytes32[](33);
+        uint8[] memory mins = new uint8[](33);
+        for (uint256 i = 0; i < 33; i++) {
+            ids[i] = bytes32(uint256(i + 100)); // monotonic ascending
+            mins[i] = 1;
+        }
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                KaskadPriceOracle.TooManyAssets.selector,
+                uint256(33),
+                uint256(32)
+            )
+        );
+        vm.prank(admin);
+        oracle.registerAssets(ids, mins);
+    }
+
+    function test_REGRESSION_registerAssets_accepts_exactly_32() public {
+        bytes32[] memory ids = new bytes32[](32);
+        uint8[] memory mins = new uint8[](32);
+        for (uint256 i = 0; i < 32; i++) {
+            ids[i] = bytes32(uint256(i + 100));
+            mins[i] = 1;
+        }
+        vm.prank(admin);
+        oracle.registerAssets(ids, mins);
+        // Reads back — last asset id is registered.
+        bytes32[] memory got = oracle.registeredAssetIds();
+        assertEq(got.length, 32);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // F-6: KaskadPriceOracle.getRoundData(non-existent round) returned a
+    //      zero-value tuple instead of reverting (Chainlink convention
+    //      violation). Downstream `KaskadAggregatorV3.getRoundData /
+    //      getAnswer / getTimestamp` propagated `answer = 0` as a "free"
+    //      price. Now reverts with NoRoundData.
+    // ═══════════════════════════════════════════════════════════════════════
+
+    function test_REGRESSION_getRoundData_reverts_on_missing_round() public {
+        // No prices submitted yet — any round id is missing.
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                KaskadPriceOracle.NoRoundData.selector,
+                ETH_USD,
+                uint80(999)
+            )
+        );
+        oracle.getRoundData(ETH_USD, 999);
+
+        // Submit one price → round 1 exists.
+        _submit(oracle, ETH_USD, 200000000000, T0, 3);
+        (uint256 p1, , ) = oracle.getRoundData(ETH_USD, 1);
+        assertEq(p1, 200000000000);
+
+        // Round 2 still missing.
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                KaskadPriceOracle.NoRoundData.selector,
+                ETH_USD,
+                uint80(2)
+            )
+        );
+        oracle.getRoundData(ETH_USD, 2);
+    }
+
+    function test_REGRESSION_aggregator_getAnswer_reverts_on_missing_round() public {
+        KaskadAggregatorV3 ethAgg = new KaskadAggregatorV3(address(oracle), ETH_USD, "ETH / USD");
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                KaskadPriceOracle.NoRoundData.selector,
+                ETH_USD,
+                uint80(7)
+            )
+        );
+        ethAgg.getAnswer(7);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
     // LOW-1: Attestation accepted up to 365 DAYS old by DeployGalleonReal
     //        (contracts/script/DeployGalleonReal.s.sol:30).
     //        An attestation doc captured today can be used to re-register

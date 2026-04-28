@@ -403,22 +403,20 @@ contract KaskadPriceOracleTest is Test {
         oracle.updatePrice(ETH_USD, 140000000000, ts, 6, sourcesHash, sig);
     }
 
-    function test_circuit_breaker_resume_rejects_low_quorum() public {
-        // Under-quorum resume reverts even for a sane price step.
+    function test_circuit_breaker_resume_no_extra_quorum() public {
+        // After 4 h silence: loosened cap (30 %) applies; normal
+        // minSources is enough to resume.
         _submitPrice(ETH_USD, 100000000000, 1710000000, 6);
 
         vm.warp(1710000000 + 5 hours);
         uint256 ts = block.timestamp;
         bytes32 sourcesHash = keccak256("test_sources");
-        bytes memory sig = _signUpdate(ETH_USD, 125000000000, ts, 5, sourcesHash);
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                KaskadPriceOracle.ResumeRequiresHigherQuorum.selector,
-                uint8(5),
-                uint8(6)
-            )
-        );
-        oracle.updatePrice(ETH_USD, 125000000000, ts, 5, sourcesHash, sig);
+        bytes memory sig = _signUpdate(ETH_USD, 125000000000, ts, 3, sourcesHash);
+        oracle.updatePrice(ETH_USD, 125000000000, ts, 3, sourcesHash, sig);
+
+        (uint256 p, , uint8 n, ) = oracle.getLatestPrice(ETH_USD);
+        assertEq(p, 125000000000);
+        assertEq(n, 3);
     }
 
     function test_circuit_breaker_NOT_bypassed_within_staleness() public {
@@ -775,13 +773,14 @@ contract RelayerE2ETest is Test {
         vm.expectRevert();
         oracle.updatePrice(ETH_USD, 70000000000, T0 + 30, 5, srcHash, sig);
 
-        // Price stuck at $1000. 5 hours pass — the resume path opens but
-        // requires the registered quorum (3) × RESUME_QUORUM_MULTIPLIER (2)
-        // = 6 sources AND a step ≤ 30 %. The first ramp step clamps to
+        // Price stuck at $1000. 5 hours pass — the resume path opens
+        // and only the loosened 30 % cap applies. The previous extra
+        // "2× minSources" gate was dropped, so the asset's normal
+        // quorum is enough to resume. The first ramp step clamps to
         // $750 (-25 %).
         vm.warp(T0 + 5 hours);
         uint256 ts = block.timestamp;
-        _relayPrice(ETH_USD, 75000000000, ts, 6); // -25 %, qu=6
+        _relayPrice(ETH_USD, 75000000000, ts, 3); // -25 %, normal quorum
 
         (uint256 price, , , ) = oracle.getLatestPrice(ETH_USD);
         assertEq(price, 75000000000);

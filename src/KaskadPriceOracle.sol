@@ -47,13 +47,11 @@ contract KaskadPriceOracle {
     uint8 public constant DECIMALS = 8;
     uint16 public constant MAX_PRICE_CHANGE_BPS = 1500; // 15% regular cap
 
-    /// @notice After `CIRCUIT_BREAKER_STALENESS` of on-chain silence the
-    ///         circuit breaker loosens to `MAX_RESUME_CHANGE_BPS` (30%),
-    ///         but ONLY if the update carries at least
-    ///         `RESUME_QUORUM_MULTIPLIER × minSources` sources (audit H-4).
+    /// @notice After `CIRCUIT_BREAKER_STALENESS` silence the circuit
+    ///         breaker loosens from 15 % to 30 %. Standard `numSources
+    ///         >= minSources` check still applies (top of `updatePrice`).
     uint16 public constant MAX_RESUME_CHANGE_BPS = 3000;
     uint256 public constant CIRCUIT_BREAKER_STALENESS = 4 hours;
-    uint8 public constant RESUME_QUORUM_MULTIPLIER = 2;
 
     /// @notice Reject a signed update whose enclave-authoritative
     ///         `timestamp` (median of per-source server_time) is more than
@@ -137,7 +135,6 @@ contract KaskadPriceOracle {
     error AssetsEmpty();
     error MismatchedLengths();
     error InvalidMinSources();
-    error ResumeRequiresHigherQuorum(uint8 provided, uint8 required);
     error NotAdmin();
     error ZeroAddress();
     error FutureTimestamp(uint256 provided, uint256 maxAllowed);
@@ -243,7 +240,7 @@ contract KaskadPriceOracle {
         if (minReq == 0) revert AssetNotRegistered(assetId);
         if (numSources < minReq) revert InsufficientSources();
 
-        _checkFreshnessAndBreaker(assetId, price, timestamp, numSources, minReq);
+        _checkFreshnessAndBreaker(assetId, price, timestamp);
         _verifyPriceSignature(assetId, price, timestamp, numSources, sourcesHash, signature);
         _storePriceUpdate(assetId, price, timestamp, numSources, sourcesHash);
     }
@@ -253,9 +250,7 @@ contract KaskadPriceOracle {
     function _checkFreshnessAndBreaker(
         bytes32 assetId,
         uint256 price,
-        uint256 timestamp,
-        uint8 numSources,
-        uint8 minReq
+        uint256 timestamp
     ) internal view {
         PriceData storage current = latestPrices[assetId];
 
@@ -278,10 +273,6 @@ contract KaskadPriceOracle {
 
         uint16 limit = MAX_PRICE_CHANGE_BPS;
         if (block.timestamp - current.timestamp >= CIRCUIT_BREAKER_STALENESS) {
-            uint8 required = minReq * RESUME_QUORUM_MULTIPLIER;
-            if (numSources < required) {
-                revert ResumeRequiresHigherQuorum(numSources, required);
-            }
             limit = MAX_RESUME_CHANGE_BPS;
         }
 

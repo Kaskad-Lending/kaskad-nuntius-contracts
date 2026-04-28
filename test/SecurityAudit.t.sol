@@ -337,28 +337,17 @@ contract SecurityAuditTest is Test {
     //          relayer, or the enclave itself) can then push ANY value.
     // ═══════════════════════════════════════════════════════════════════════
 
-    /// REGRESSION GUARD for the fix of H-4. After 4 h of silence, the
-    /// circuit breaker now REQUIRES 2× the registered quorum AND clamps
-    /// the change to 30 %. The pre-fix "free push of any price" primitive
-    /// now reverts on both conditions.
+    /// REGRESSION GUARD for H-4: 4 h silence does NOT grant a free push
+    /// of any price — 30 % cap still applies, normal minSources still
+    /// required. The 2× quorum gate was dropped (locked legitimate
+    /// pull-and-submit flow); 30 % cap is the actual H-4 mitigation.
     function test_REGRESSION_staleness_no_longer_grants_free_pump() public {
-        _submit(oracle, ETH_USD, 200000000000, T0, 3); // $2000 with minReq quorum
+        _submit(oracle, ETH_USD, 200000000000, T0, 3); // $2000
         vm.warp(T0 + 4 hours + 1);
         uint256 ts = block.timestamp;
 
-        // (a) Low-quorum attempt reverts with ResumeRequiresHigherQuorum.
-        bytes memory lowQ = _sign(signerPk, ETH_USD, 200000000000 * 1000, ts, 3, SRC_HASH);
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                KaskadPriceOracle.ResumeRequiresHigherQuorum.selector,
-                uint8(3),
-                uint8(6)
-            )
-        );
-        oracle.updatePrice(ETH_USD, 200000000000 * 1000, ts, 3, SRC_HASH, lowQ);
-
-        // (b) Even at the doubled quorum, 1000× change > 30 % cap reverts.
-        bytes memory highQ = _sign(signerPk, ETH_USD, 200000000000 * 1000, ts, 6, SRC_HASH);
+        // 1000× change > 30 % cap reverts even with sane quorum.
+        bytes memory wild = _sign(signerPk, ETH_USD, 200000000000 * 1000, ts, 3, SRC_HASH);
         vm.expectRevert(
             abi.encodeWithSelector(
                 KaskadPriceOracle.PriceChangeExceedsLimit.selector,
@@ -366,10 +355,10 @@ contract SecurityAuditTest is Test {
                 uint256(3_000)
             )
         );
-        oracle.updatePrice(ETH_USD, 200000000000 * 1000, ts, 6, SRC_HASH, highQ);
+        oracle.updatePrice(ETH_USD, 200000000000 * 1000, ts, 3, SRC_HASH, wild);
 
-        // (c) A sane 25 % step at the doubled quorum is accepted.
-        _submit(oracle, ETH_USD, 250000000000, ts, 6); // $2500
+        // Sane 25 % step at the registered quorum is accepted.
+        _submit(oracle, ETH_USD, 250000000000, ts, 3); // $2500
         (uint256 p, , , ) = oracle.getLatestPrice(ETH_USD);
         assertEq(p, 250000000000);
     }

@@ -2,27 +2,27 @@
   "chainId": 38836,
   "network": "Galleon Testnet",
   "rpc": "https://galleon-testnet.igralabs.com:8545",
-  "deployedAt": "2026-05-03T13:18Z",
+  "deployedAt": "2026-05-05T11:42Z",
 
   "attestation": {
-    "MockAttestationVerifier": "0x4254ba3dd796ec650951c0b235ae4afb8933ffa9",
+    "MockAttestationVerifier": "0x9d8def7fdc95b69b4b557dbbba6b00cf6d90a177",
     "_note": "Real Nitro verification still blocked by Galleon block.timestamp drift > 3h AWS leaf cert TTL. MockVerifier carries the live enclave signer."
   },
 
   "teeOracle": {
-    "KaskadPriceOracle": "0x3c78bea6c67b3e09cdd308b27054c7eb9ad2f493",
+    "KaskadPriceOracle": "0xc3b1a09f11ef7b5094e06e5aaab62d0be5449318",
     "expectedPCR0": "0x07fd2cd3f8fa2de6172b7041a97de58a7352e05a92e0eb80a7e90b9b670b7cec",
-    "enclaveSigner": "0x0a1f276f2b505eefebfe6523bdf88e04cd38aefb",
+    "enclaveSigner": "0x92b5e2a8c6502589309a1ee6cf61d49514e3a57b",
     "admin": "0xe92cf3419E91EDBeAc9DD8eAC7728Df5DCe57A52",
-    "_note": "Redeploy 2026-05-03 after AWS reclaimed the spot instance on 2026-05-01 — new instance booted with fresh enclave signer. MockVerifier hardcodes the signer at construction so each spot reclaim forces a chain redeploy. Long-term: move ASG off pure spot, or add admin-controlled addSigner bypass, or implement enclave key sealing."
+    "_note": "Redeploy 2026-05-05 after a second spot reclaim on 2026-05-04. ASG moved to on-demand (`on_demand_base_capacity = 1`); the on-demand instance refresh that followed booted with this signer. Should be stable from here."
   },
 
   "aggregators": {
-    "ETH/USD":  "0xcdac49a91096e78afca0f947c7b0ec194b4fc1e7",
-    "BTC/USD":  "0x2b96397ebf5a5149d86ceef9c7b9a87d3de16ddf",
-    "KAS/USD":  "0x6b667a4102d272ddf7eda040fe849d5a2d1a2879",
-    "USDC/USD": "0x05a33a08aac026a2e2b2b8223fb766933deae404",
-    "IGRA/USD": "0xac5fb2d5d7cd3c01741429245ea844b7ef77e4bd"
+    "ETH/USD":  "0x35f20735ab7e415aabe850fc6ac5bf456572c612",
+    "BTC/USD":  "0x2889b859042e3ef679d583d87185d8f52f4c79a8",
+    "KAS/USD":  "0xcfdc77627279ede389ad139f6f68ed05fa1131da",
+    "USDC/USD": "0xabd7a2097635bfc4fb184f881d80cb75960f0a36",
+    "IGRA/USD": "0x059c3cf5a9c39d630c0f2230880fe69ef9683325"
   },
 
   "router": {

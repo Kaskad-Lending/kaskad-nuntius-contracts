@@ -2,27 +2,27 @@
   "chainId": 38836,
   "network": "Galleon Testnet",
   "rpc": "https://galleon-testnet.igralabs.com:8545",
-  "deployedAt": "2026-05-05T11:42Z",
+  "deployedAt": "2026-05-07T00:23Z",
 
   "attestation": {
-    "MockAttestationVerifier": "0x9d8def7fdc95b69b4b557dbbba6b00cf6d90a177",
+    "MockAttestationVerifier": "0x6548ae031c21180f64Ac464Cb211e8793fBb24Ed",
     "_note": "Real Nitro verification still blocked by Galleon block.timestamp drift > 3h AWS leaf cert TTL. MockVerifier carries the live enclave signer."
   },
 
   "teeOracle": {
-    "KaskadPriceOracle": "0xc3b1a09f11ef7b5094e06e5aaab62d0be5449318",
+    "KaskadPriceOracle": "0x869764619f0eDA0076Ece6eec2C3509ce01717E1",
     "expectedPCR0": "0x07fd2cd3f8fa2de6172b7041a97de58a7352e05a92e0eb80a7e90b9b670b7cec",
-    "enclaveSigner": "0x92b5e2a8c6502589309a1ee6cf61d49514e3a57b",
-    "admin": "0xe92cf3419E91EDBeAc9DD8eAC7728Df5DCe57A52",
-    "_note": "Redeploy 2026-05-05 after a second spot reclaim on 2026-05-04. ASG moved to on-demand (`on_demand_base_capacity = 1`); the on-demand instance refresh that followed booted with this signer. Should be stable from here."
+    "enclaveSigner": "0x49E92D77444c63f5ec7B0ED4d4c75967E23f114a",
+    "admin": "0xa0Ee7A142d267C1f36714E4a8F75612F20a79720",
+    "_note": "Redeploy 2026-05-07 with KMS attestation key sealing live (PR-1/2/3 + bridge order fix + IAM ListBucket grant). Signer survives spot reclaims and instance refreshes via KMS-sealed S3 blob. admin is the deployer EOA — transfer to ops admin (0xe92cf3...) when ready, or leave for next redeploy."
   },
 
   "aggregators": {
-    "ETH/USD":  "0x35f20735ab7e415aabe850fc6ac5bf456572c612",
-    "BTC/USD":  "0x2889b859042e3ef679d583d87185d8f52f4c79a8",
-    "KAS/USD":  "0xcfdc77627279ede389ad139f6f68ed05fa1131da",
-    "USDC/USD": "0xabd7a2097635bfc4fb184f881d80cb75960f0a36",
-    "IGRA/USD": "0x059c3cf5a9c39d630c0f2230880fe69ef9683325"
+    "ETH/USD":  "0x5E83877fE38ffFDf2d15105b59Ddc4Ed96d007Be",
+    "BTC/USD":  "0x1804918DCF93d24723092564A345B86c8CB34fB0",
+    "KAS/USD":  "0x80Cb55de3E9B31927740EF03bCDeAF4b9c988cd1",
+    "USDC/USD": "0xA90214bb49AC9567F504AF043fFA6F29f3d80C3d",
+    "IGRA/USD": "0xD9A67a74aF0bec2356A5f837b993bca9d3695317"
   },
 
   "router": {
@@ -34,7 +34,7 @@
     "AaveOracle": "0xc1198A9d400306a0406fD3E3Ad67140b3D059f48",
     "AavePool": "0xA1D84fc43f7F2D803a2d64dbBa4A90A9A79E3F24",
     "PoolAddressesProvider": "0x9DB9797733FE5F734724Aa05D29Fa39563563Af5",
-    "_note": "Aave config still points at legacy aggregators. setAssetSources([WETH, WBTC, USDC, WIKAS], [new aggregator addrs above]) needed for cutover. IGRA + KSKD stay on MockPriceOracle."
+    "_note": "Aave config still points at legacy aggregators. setAssetSources([WETH, WBTC, USDC, WIKAS], [ETH/USD agg, BTC/USD agg, USDC/USD agg, KAS/USD agg]) needed for cutover — runs from PoolAdmin (0xe92cf3...) which is operator-held. IGRA + KSKD stay on MockPriceOracle."
   },
 
   "tokens": {
@@ -44,6 +44,21 @@
     "WIKAS": "0xA7CEd4eFE5C3aE0e5C26735559A77b1e38950a14",
     "IGRA":  "0x04443457b050BBaa195bb71Ef6CCDb519CcB1f0f",
     "KSKD":  "0x2d17780a59044D49FeEf0AA9cEaB1B6e3161aFf7"
+  },
+
+  "previous": {
+    "_note": "2026-05-05 deployment, ephemeral signer (no KMS sealing). Killed on 2026-05-07 spot/refresh cycle.",
+    "KaskadPriceOracle":       "0xc3b1a09f11ef7b5094e06e5aaab62d0be5449318",
+    "MockAttestationVerifier": "0x9d8def7fdc95b69b4b557dbbba6b00cf6d90a177",
+    "enclaveSigner":           "0x92b5e2a8c6502589309a1ee6cf61d49514e3a57b",
+    "admin":                   "0xe92cf3419E91EDBeAc9DD8eAC7728Df5DCe57A52",
+    "aggregators": {
+      "ETH/USD":  "0x35f20735ab7e415aabe850fc6ac5bf456572c612",
+      "BTC/USD":  "0x2889b859042e3ef679d583d87185d8f52f4c79a8",
+      "KAS/USD":  "0xcfdc77627279ede389ad139f6f68ed05fa1131da",
+      "USDC/USD": "0xabd7a2097635bfc4fb184f881d80cb75960f0a36",
+      "IGRA/USD": "0x059c3cf5a9c39d630c0f2230880fe69ef9683325"
+    }
   },
 
   "legacy": {

@@ -12,7 +12,6 @@ import "../test/mocks/MockVerifiers.sol";
 ///
 /// Required env:
 ///   DEPLOYER_KEY    — uint256 private key (or `--private-key` on CLI)
-///   ORACLE_ADMIN    — address with `registerAssets` authority
 ///   ORACLE_SIGNER   — (optional) enclave-signer address the mock returns.
 ///                     Defaults to Anvil account #1.
 contract DeployLocal is Deploy {
@@ -48,9 +47,8 @@ contract DeployLocal is Deploy {
         return LOCAL_PCR0;
     }
 
-    /// @notice Skip the prod env-validation gates (PCR1/PCR2 / admin-vs-deployer).
-    ///         DeployLocal uses a mock verifier with no PCR1/PCR2 inputs, and
-    ///         testnet flows routinely re-use the deployer key as admin.
+    /// @notice Skip the prod env-validation gates (PCR1/PCR2). DeployLocal
+    ///         uses a mock verifier with no PCR1/PCR2 inputs.
     function _validateEnv() internal pure override {
         // intentional no-op — see Deploy._validateEnv NatSpec.
     }

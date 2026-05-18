@@ -109,6 +109,54 @@ contract KaskadPriceOracleTest is Test {
         assertEq(oracle.DECIMALS(), 8);
     }
 
+    // ─── Admin Transfer ──────────────────────────────────────────────
+
+    function test_transferAdmin_success() public {
+        address newAdmin = address(0xA0D1);
+
+        vm.expectEmit(true, true, false, false);
+        emit KaskadPriceOracle.AdminTransferred(admin, newAdmin);
+
+        vm.prank(admin);
+        oracle.transferAdmin(newAdmin);
+
+        assertEq(oracle.admin(), newAdmin);
+    }
+
+    function test_transferAdmin_reverts_not_admin() public {
+        vm.prank(address(0xCAFE));
+        vm.expectRevert(KaskadPriceOracle.NotAdmin.selector);
+        oracle.transferAdmin(address(0xA0D1));
+    }
+
+    function test_transferAdmin_reverts_zero_address() public {
+        vm.prank(admin);
+        vm.expectRevert(KaskadPriceOracle.ZeroAddress.selector);
+        oracle.transferAdmin(address(0));
+    }
+
+    function test_transferAdmin_old_admin_loses_registerAssets() public {
+        address newAdmin = address(0xA0D1);
+        vm.prank(admin);
+        oracle.transferAdmin(newAdmin);
+
+        bytes32[] memory ids = new bytes32[](1);
+        uint8[] memory mins = new uint8[](1);
+        ids[0] = ETH_USD; mins[0] = 3;
+
+        // Old admin can no longer register assets.
+        vm.prank(admin);
+        vm.expectRevert(KaskadPriceOracle.NotAdmin.selector);
+        oracle.registerAssets(ids, mins);
+
+        // New admin can.
+        vm.prank(newAdmin);
+        oracle.registerAssets(ids, mins);
+        bytes32[] memory registered = oracle.registeredAssetIds();
+        assertEq(registered.length, 1);
+        assertEq(registered[0], ETH_USD);
+    }
+
     // ─── Enclave Registration ────────────────────────────────────────
 
     function test_registerEnclave_success() public {

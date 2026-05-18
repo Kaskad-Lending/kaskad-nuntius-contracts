@@ -14,10 +14,12 @@ import {NitroProver} from "nitro-prover/NitroProver.sol";
 ///         immediately after the script finishes. Override the hooks in
 ///         `DeployLocal` to swap the verifier for a mock on anvil.
 ///
+/// The oracle `admin` is set to the deployer EOA (transient): the script
+/// runs `registerEnclave` + `registerAssets` from it. Hand the role to the
+/// final multisig afterwards with `TransferAdmin.s.sol`.
+///
 /// Required env:
 ///   DEPLOYER_KEY              — uint256 private key (optional if `--private-key` passed)
-///   ORACLE_ADMIN              — address with `registerAssets` authority. MUST differ
-///                                from the deployer when DEPLOYER_KEY is set (audit D-3).
 ///   ATTESTATION_DOC           — raw Nitro attestation bytes (CBOR COSE_Sign1)
 ///   EXPECTED_PCR1             — bytes32 kernel hash. MUST be non-zero (audit D-2).
 ///   EXPECTED_PCR2             — bytes32 application hash. MUST be non-zero (audit D-2).
@@ -88,15 +90,6 @@ contract Deploy is Script {
         bytes32 expectedPCR2 = vm.envBytes32("EXPECTED_PCR2");
         require(expectedPCR1 != bytes32(0), "EXPECTED_PCR1 == 0 (audit D-2): refusing to deploy a verifier that matches any kernel hash");
         require(expectedPCR2 != bytes32(0), "EXPECTED_PCR2 == 0 (audit D-2): refusing to deploy a verifier that matches any application hash");
-
-        address admin = vm.envAddress("ORACLE_ADMIN");
-        uint256 key = vm.envOr("DEPLOYER_KEY", uint256(0));
-        if (key != 0) {
-            require(
-                admin != vm.addr(key),
-                "ORACLE_ADMIN must differ from DEPLOYER_KEY signer (audit D-3: hot-key + admin role on the same EOA collapses two security boundaries)"
-            );
-        }
     }
 
     /// @notice Optional binding: when `EXPECTED_ENCLAVE_SIGNER` env is
@@ -172,11 +165,13 @@ contract Deploy is Script {
         //     against an attacker-substituted attestation doc.
         _assertExpectedSigner(verifier, attestationDoc);
 
-        // 5. Oracle
-        address admin = vm.envAddress("ORACLE_ADMIN");
+        // 5. Oracle — admin = deployer (transient). The deployer runs
+        //    registerEnclave + registerAssets below; hand the role to the
+        //    final multisig afterwards via TransferAdmin.s.sol.
+        address admin = key != 0 ? vm.addr(key) : msg.sender;
         KaskadPriceOracle oracle = new KaskadPriceOracle(pcr0, address(verifier), admin);
         console.log("KaskadPriceOracle deployed at:", address(oracle));
-        console.log("Admin (can call registerAssets):", admin);
+        console.log("Admin (deployer; can call registerAssets):", admin);
 
         // 6. Register the enclave signer (permissionless; grow-only set)
         oracle.registerEnclave(attestationDoc);

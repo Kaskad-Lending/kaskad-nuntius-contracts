@@ -38,11 +38,13 @@ contract KaskadPriceOracle {
     bytes32 public immutable expectedPCR0;
     IAttestationVerifier public immutable verifier;
 
-    /// @notice Admin role for bootstrap operations (`registerAssets`). Set
-    ///         at construction; cannot be changed. Compromising this key
-    ///         lets the attacker re-submit quorum parameters but does NOT
-    ///         let them sign prices — that still requires the enclave key.
-    address public immutable admin;
+    /// @notice Admin role for bootstrap operations (`registerAssets`).
+    ///         Transferable via `transferAdmin` — used to hand the role
+    ///         from the deploy-time EOA to a multisig after setup.
+    ///         Compromising this key lets the attacker re-submit quorum
+    ///         parameters but does NOT let them sign prices — that still
+    ///         requires the enclave key.
+    address public admin;
 
     uint8 public constant DECIMALS = 8;
     uint16 public constant MAX_PRICE_CHANGE_BPS = 1500; // 15% regular cap
@@ -119,6 +121,7 @@ contract KaskadPriceOracle {
         uint80  roundId
     );
     event AssetsRegistered(address indexed admin, uint256 numAssets);
+    event AdminTransferred(address indexed previousAdmin, address indexed newAdmin);
 
     // ─── Errors ──────────────────────────────────────────────────────────
 
@@ -188,6 +191,14 @@ contract KaskadPriceOracle {
     }
 
     // ─── Asset-quorum registration (admin) ───────────────────────────────
+
+    /// @notice Hand the admin role to a new address. Used to transfer
+    ///         from the deploy-time EOA to a multisig after setup.
+    function transferAdmin(address newAdmin) external onlyAdmin {
+        if (newAdmin == address(0)) revert ZeroAddress();
+        emit AdminTransferred(admin, newAdmin);
+        admin = newAdmin;
+    }
 
     /// @notice Write the per-asset quorum commitment. Only callable by the
     ///         admin key set at construction. `ids` MUST be strictly

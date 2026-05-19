@@ -33,9 +33,9 @@ contract SecurityAuditTest is Test {
     function setUp() public {
         vm.warp(T0);
         signerAddr = vm.addr(signerPk);
-        verifier = new MockAttestationVerifier(PCR0, signerAddr);
+        verifier = new MockAttestationVerifier(PCR0);
         oracle = new KaskadPriceOracle(PCR0, address(verifier), admin);
-        oracle.registerEnclave(hex"00");
+        oracle.registerEnclave(abi.encode(signerAddr));
 
         bytes32[] memory ids = new bytes32[](2);
         uint8[] memory mins = new uint8[](2);
@@ -107,9 +107,9 @@ contract SecurityAuditTest is Test {
         // signer (which is the design — anyone with a valid attestation from
         // the correct enclave image can register). A signature intended for
         // oracle #1 works on oracle #2 verbatim.
-        MockAttestationVerifier v2 = new MockAttestationVerifier(PCR0, signerAddr);
+        MockAttestationVerifier v2 = new MockAttestationVerifier(PCR0);
         KaskadPriceOracle oracle2 = new KaskadPriceOracle(PCR0, address(v2), admin);
-        oracle2.registerEnclave(hex"00");
+        oracle2.registerEnclave(abi.encode(signerAddr));
 
         bytes32[] memory ids2 = new bytes32[](2);
         uint8[] memory mins2 = new uint8[](2);
@@ -239,16 +239,11 @@ contract SecurityAuditTest is Test {
     function test_REGRESSION_registerEnclave_preserves_asset_registration() public {
         assertEq(_minSources(oracle, ETH_USD), 3);
 
-        // Attacker deploys their own same-PCR attestation and front-runs.
-        address otherSigner = address(0xC0DE);
-        MockAttestationVerifier v2 = new MockAttestationVerifier(PCR0, otherSigner);
-        // Hot-swap the verifier via a fresh oracle: we can't mutate the
-        // existing oracle's verifier (immutable), so this simulates the
-        // sibling case where the SAME oracle receives a different signer.
-        // For the invariant we care about (asset mapping persistence)
-        // exercising `registerEnclave` on the existing oracle is enough:
-        v2; // silence warning
-        oracle.registerEnclave(hex"00"); // same verifier, same signer — no-op but exercises the path.
+        // The invariant we care about is asset-mapping persistence across a
+        // `registerEnclave` call. Exercising it on the existing oracle (the
+        // mock decodes the signer from the doc) is enough — re-registering
+        // the same signer is a no-op but still walks the same code path.
+        oracle.registerEnclave(abi.encode(signerAddr)); // same signer — no-op but exercises the path.
         assertEq(_minSources(oracle, ETH_USD), 3, "asset quorum must survive re-register");
     }
 

@@ -5,14 +5,16 @@ import "./Deploy.s.sol";
 import "../test/mocks/MockVerifiers.sol";
 
 /// @notice Local/anvil deploy. Swaps the Nitro verifier stack for a
-///         `MockAttestationVerifier` that accepts `hex"00"` and returns
-///         a predetermined (pcr0, signer) pair. Everything else —
-///         `registerEnclave`, `registerAssets`, aggregator deployment —
-///         is inherited from `Deploy`, so local flow matches prod flow.
+///         `MockAttestationVerifier` that returns a predetermined PCR0 and
+///         decodes the enclave signer from the attestation doc. Everything
+///         else — `registerEnclave`, `registerAssets`, aggregator
+///         deployment — is inherited from `Deploy`, so local flow matches
+///         prod flow.
 ///
 /// Required env:
 ///   DEPLOYER_KEY    — uint256 private key (or `--private-key` on CLI)
 ///   ORACLE_SIGNER   — (optional) enclave-signer address the mock returns.
+///                     Passed to the mock inside the attestation doc.
 ///                     Defaults to Anvil account #1.
 contract DeployLocal is Deploy {
     /// @notice Fake PCR0 — must match what `MockAttestationVerifier`
@@ -23,15 +25,14 @@ contract DeployLocal is Deploy {
     address constant ANVIL_ACCOUNT_1 = 0x70997970C51812dc3A010C7d01b50e0d17dc79C8;
 
     function _buildVerifier() internal override returns (IAttestationVerifier) {
-        address signer = vm.envOr("ORACLE_SIGNER", ANVIL_ACCOUNT_1);
-        MockAttestationVerifier verifier = new MockAttestationVerifier(LOCAL_PCR0, signer);
+        MockAttestationVerifier verifier = new MockAttestationVerifier(LOCAL_PCR0);
         console.log("MockAttestationVerifier:", address(verifier));
-        console.log("Mock enclave signer:", signer);
         return IAttestationVerifier(address(verifier));
     }
 
-    function _getAttestationDoc() internal pure override returns (bytes memory) {
-        return hex"00";
+    function _getAttestationDoc() internal view override returns (bytes memory) {
+        // The mock decodes the enclave signer from the attestation doc.
+        return abi.encode(vm.envOr("ORACLE_SIGNER", ANVIL_ACCOUNT_1));
     }
 
     function _cacheCerts(IAttestationVerifier, bytes memory) internal override {

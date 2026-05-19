@@ -4,25 +4,27 @@ pragma solidity ^0.8.20;
 import "../../src/KaskadPriceOracle.sol";
 
 /// @title MockAttestationVerifier
-/// @notice Mock verifier for testing. Accepts any attestation and returns
-///         pre-configured PCR0 + signer address.
+/// @notice Mock verifier for testing. Accepts any attestation, returns the
+///         pre-configured PCR0, and decodes the enclave signer from
+///         `attestationDoc` (an abi-encoded `address`). Decoding the signer
+///         from the doc — rather than hardcoding it — lets a single mock
+///         register several enclave signers on testnet (e.g. multi-region
+///         HA: one signer per region).
 ///         NEVER deploy this in production — it bypasses all security.
 contract MockAttestationVerifier is IAttestationVerifier {
     bytes32 public pcr0;
-    address public enclaveAddr;
 
-    constructor(bytes32 _pcr0, address _enclaveAddr) {
+    constructor(bytes32 _pcr0) {
         pcr0 = _pcr0;
-        enclaveAddr = _enclaveAddr;
     }
 
-    function verifyAttestation(bytes calldata)
+    function verifyAttestation(bytes calldata attestationDoc)
         external
         view
         override
         returns (bool valid, bytes32 _pcr0, address _enclaveAddress)
     {
-        return (true, pcr0, enclaveAddr);
+        return (true, pcr0, abi.decode(attestationDoc, (address)));
     }
 }
 

@@ -25,10 +25,10 @@ contract KaskadPriceOracleTest is Test {
         signerPrivateKey = 0xA11CE;
         signer = vm.addr(signerPrivateKey);
 
-        mockVerifier = new MockAttestationVerifier(EXPECTED_PCR0, signer);
+        mockVerifier = new MockAttestationVerifier(EXPECTED_PCR0);
         oracle = new KaskadPriceOracle(EXPECTED_PCR0, address(mockVerifier), admin);
 
-        oracle.registerEnclave(hex"00");
+        oracle.registerEnclave(abi.encode(signer));
 
         bytes32[] memory ids = new bytes32[](2);
         uint8[] memory mins = new uint8[](2);
@@ -165,7 +165,7 @@ contract KaskadPriceOracleTest is Test {
 
         // Anyone can register
         vm.prank(address(0xCAFE)); // random caller
-        fresh.registerEnclave(hex"deadbeef");
+        fresh.registerEnclave(abi.encode(signer));
 
         assertTrue(fresh.validSigner(signer));
         assertEq(fresh.signerCount(), 1);
@@ -176,7 +176,7 @@ contract KaskadPriceOracleTest is Test {
         // attestation is a no-op: signerCount stays 1, no additional
         // EnclaveRegistered event.
         assertEq(oracle.signerCount(), 1);
-        oracle.registerEnclave(hex"00");
+        oracle.registerEnclave(abi.encode(signer));
         assertEq(oracle.signerCount(), 1);
         assertTrue(oracle.validSigner(signer));
     }
@@ -216,10 +216,10 @@ contract KaskadPriceOracleTest is Test {
         // into its own set. Doesn't touch any other oracle's set — each
         // deployment is independent.
         address otherSigner = address(0xBEEF);
-        MockAttestationVerifier otherVerifier = new MockAttestationVerifier(EXPECTED_PCR0, otherSigner);
+        MockAttestationVerifier otherVerifier = new MockAttestationVerifier(EXPECTED_PCR0);
         KaskadPriceOracle o = new KaskadPriceOracle(EXPECTED_PCR0, address(otherVerifier), admin);
 
-        o.registerEnclave(hex"00");
+        o.registerEnclave(abi.encode(otherSigner));
         assertTrue(o.validSigner(otherSigner));
         assertFalse(o.validSigner(signer));
         assertEq(o.signerCount(), 1);
@@ -618,7 +618,7 @@ contract KaskadPriceOracleTest is Test {
         KaskadPriceOracle fresh = new KaskadPriceOracle(EXPECTED_PCR0, address(mockVerifier), admin);
 
         uint256 gasBefore = gasleft();
-        fresh.registerEnclave(hex"00");
+        fresh.registerEnclave(abi.encode(signer));
         uint256 gasUsed = gasBefore - gasleft();
 
         assertLt(gasUsed, 200_000);
@@ -663,9 +663,9 @@ contract RelayerE2ETest is Test {
         signerPk = 0xA11CE;
         signerAddr = vm.addr(signerPk);
 
-        mockVerifier = new MockAttestationVerifier(PCR0, signerAddr);
+        mockVerifier = new MockAttestationVerifier(PCR0);
         oracle = new KaskadPriceOracle(PCR0, address(mockVerifier), admin);
-        oracle.registerEnclave(hex"00");
+        oracle.registerEnclave(abi.encode(signerAddr));
 
         bytes32[] memory ids = new bytes32[](5);
         uint8[] memory mins = new uint8[](5);
@@ -902,9 +902,9 @@ contract RelayerE2ETest is Test {
         // Fresh oracle, fresh verifier, fresh enclave key.
         uint256 newPk = 0xBEEF1;
         address newAddr = vm.addr(newPk);
-        MockAttestationVerifier newVerifier = new MockAttestationVerifier(PCR0, newAddr);
+        MockAttestationVerifier newVerifier = new MockAttestationVerifier(PCR0);
         KaskadPriceOracle fresh = new KaskadPriceOracle(PCR0, address(newVerifier), admin);
-        fresh.registerEnclave(hex"00");
+        fresh.registerEnclave(abi.encode(newAddr));
         assertTrue(fresh.validSigner(newAddr));
         assertFalse(fresh.validSigner(signerAddr));
         assertEq(fresh.signerCount(), 1);

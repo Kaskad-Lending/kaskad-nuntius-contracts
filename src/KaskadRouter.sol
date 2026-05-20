@@ -5,13 +5,12 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
-/// @title IKaskadPriceOracle — minimal interface for price updates.
 interface IKaskadPriceOracle {
     function updatePrice(
         bytes32 assetId,
         uint256 price,
         uint256 timestamp,
-        uint8   numSources,
+        uint8 numSources,
         bytes32 sourcesHash,
         bytes calldata signature
     ) external;
@@ -19,11 +18,18 @@ interface IKaskadPriceOracle {
     error StalePrice(uint256 provided, uint256 current);
 }
 
-/// @title IPool — minimal Aave V3 Pool interface for KaskadRouter.
 interface IPool {
-    function borrow(address asset, uint256 amount, uint256 interestRateMode, uint16 referralCode, address onBehalfOf) external;
+    function borrow(address asset, uint256 amount, uint256 interestRateMode, uint16 referralCode, address onBehalfOf)
+        external;
     function withdraw(address asset, uint256 amount, address to) external returns (uint256);
-    function liquidationCall(address collateralAsset, address debtAsset, address user, uint256 debtToCover, bool receiveAToken) external;
+    function liquidationCall(
+        address collateralAsset,
+        address debtAsset,
+        address user,
+        uint256 debtToCover,
+        bool receiveAToken
+    ) external;
+    function ADDRESSES_PROVIDER() external view returns (address);
 
     struct ReserveDataLegacy {
         uint256 configuration;
@@ -32,8 +38,8 @@ interface IPool {
         uint128 variableBorrowIndex;
         uint128 currentVariableBorrowRate;
         uint128 currentStableBorrowRate;
-        uint40  lastUpdateTimestamp;
-        uint16  id;
+        uint40 lastUpdateTimestamp;
+        uint16 id;
         address aTokenAddress;
         address stableDebtTokenAddress;
         address variableDebtTokenAddress;
@@ -45,47 +51,44 @@ interface IPool {
     function getReserveData(address asset) external view returns (ReserveDataLegacy memory);
 }
 
+interface IPoolAddressesProvider {
+    function getPriceOracleSentinel() external view returns (address);
+}
+
+interface IKaskadStalenessChecker {
+    function isAssetFresh(address asset) external view returns (bool);
+}
+
 /// @title KaskadRouter
-/// @notice Atomic price-update + Aave action in one TX.
-///         Stores msg.sender in transient storage so KaskadStalenessChecker
-///         can verify price freshness only for the caller's assets.
-///
-/// User flow (one-time setup):
-///   1. debtToken.approveDelegation(router, type(uint256).max)  — for borrow
-///   2. aToken.approve(router, type(uint256).max)               — for withdraw
-///
-/// Security invariant: onBehalfOf is ALWAYS msg.sender. Router cannot
-/// act on behalf of anyone other than the caller.
+/// @notice Atomic price-update + Aave action in one TX. onBehalfOf is always
+///         msg.sender. The freshness subject (caller for borrow/withdraw,
+///         liquidatee for liquidation) is recorded in transient storage so
+///         the sentinel checks the right portfolio.
 contract KaskadRouter is ReentrancyGuard {
     using SafeERC20 for IERC20;
 
     IKaskadPriceOracle public immutable oracle;
     IPool public immutable pool;
 
-    /// @notice Transient storage slot for the current caller address.
-    ///         Used by KaskadStalenessChecker to identify which user's assets to check.
     bytes32 private constant SENDER_SLOT = keccak256("KaskadRouter.sender");
 
     struct PriceUpdate {
         bytes32 assetId;
         uint256 price;
         uint256 timestamp;
-        uint8   numSources;
+        uint8 numSources;
         bytes32 sourcesHash;
-        bytes   signature;
+        bytes signature;
     }
 
     error PriceUpdateFailed(bytes32 assetId);
+    error StaleAsset(address asset);
 
     constructor(address _oracle, address _pool) {
         oracle = IKaskadPriceOracle(_oracle);
         pool = IPool(_pool);
     }
 
-    // ─── Transient storage: caller tracking ────────────────────────────
-
-    /// @notice Returns the address stored in transient storage for the current TX.
-    ///         Returns address(0) if called outside of a Router-initiated TX.
     function sender() external view returns (address s) {
         bytes32 slot = SENDER_SLOT;
         assembly {
@@ -93,12 +96,18 @@ contract KaskadRouter is ReentrancyGuard {
         }
     }
 
-    // ─── Internal: push prices ──────────────────────────────────────
+    modifier withSender(address who) {
+        bytes32 slot = SENDER_SLOT;
+        assembly {
+            tstore(slot, who)
+        }
+        _;
+        assembly {
+            tstore(slot, 0)
+        }
+    }
 
-    /// @dev Pushes each price to the oracle.
-    ///      Only skips StalePrice and UpdateTooFrequent (price already fresh on-chain).
-    ///      Reverts on all other errors (circuit breaker, invalid sig, etc).
-    ///      Freshness validation is delegated to the oracle contract itself.
+    /// @dev Skips StalePrice (already fresh on-chain); reverts on any other oracle error.
     function _pushPrices(PriceUpdate[] calldata prices) internal {
         for (uint256 i = 0; i < prices.length; i++) {
             try oracle.updatePrice(
@@ -108,75 +117,50 @@ contract KaskadRouter is ReentrancyGuard {
                 prices[i].numSources,
                 prices[i].sourcesHash,
                 prices[i].signature
-            ) {} catch (bytes memory reason) {
-                // Only skip StalePrice (price is already fresh on-chain)
-                bytes4 selector = bytes4(reason);
-                if (selector == IKaskadPriceOracle.StalePrice.selector) {
-                    // Safe: on-chain price is already at or ahead of this update.
-                    continue;
-                }
-                // Everything else is unsafe to skip (circuit breaker, bad sig, etc)
+            ) {}
+            catch (bytes memory reason) {
+                if (bytes4(reason) == IKaskadPriceOracle.StalePrice.selector) continue;
                 revert PriceUpdateFailed(prices[i].assetId);
             }
         }
     }
 
-    /// @dev Sets transient sender, executes action, clears transient sender.
-    modifier withSender() {
-        bytes32 slot = SENDER_SLOT;
-        assembly {
-            tstore(slot, caller())
-        }
-        _;
-        // Transient storage auto-clears at end of TX, but we clear explicitly
-        // for safety in case of complex call chains within the same TX.
-        assembly {
-            tstore(slot, 0)
-        }
+    /// @dev Aave's in-band sentinel iterates `userConfig`, which does not yet
+    ///      include the asset being borrowed — gate it explicitly.
+    function _requireFreshAsset(address asset) internal view {
+        address sentinel = IPoolAddressesProvider(pool.ADDRESSES_PROVIDER()).getPriceOracleSentinel();
+        if (!IKaskadStalenessChecker(sentinel).isAssetFresh(asset)) revert StaleAsset(asset);
     }
 
-    // ─── Borrow ─────────────────────────────────────────────────────
-    // Requires: debtToken.approveDelegation(router, amount) — one-time
-    // Aave V3 mints debtToken to onBehalfOf but sends underlying to msg.sender
-    // (the caller of pool.borrow = this Router). We forward it to the user.
-
-    function borrowWithPrices(
-        PriceUpdate[] calldata prices,
-        address asset,
-        uint256 amount,
-        uint256 interestRateMode
-    ) external nonReentrant withSender {
+    /// @notice Borrow `asset`. Requires debtToken.approveDelegation upfront.
+    function borrowWithPrices(PriceUpdate[] calldata prices, address asset, uint256 amount, uint256 interestRateMode)
+        external
+        nonReentrant
+        withSender(msg.sender)
+    {
         _pushPrices(prices);
+        _requireFreshAsset(asset);
         pool.borrow(asset, amount, interestRateMode, 0, msg.sender);
         IERC20(asset).safeTransfer(msg.sender, amount);
     }
 
-    // ─── Withdraw ───────────────────────────────────────────────────
-    // Requires: aToken.approve(router, amount) — one-time
-    // Router pulls aTokens, Pool burns them and sends underlying to user.
-
-    function withdrawWithPrices(
-        PriceUpdate[] calldata prices,
-        address asset,
-        address aToken,
-        uint256 amount
-    ) external nonReentrant withSender {
+    /// @notice Withdraw `asset`. No freshness gate — user exit must not be
+    ///         blocked. aToken derived from the reserve, never the caller.
+    function withdrawWithPrices(PriceUpdate[] calldata prices, address asset, uint256 amount)
+        external
+        nonReentrant
+        withSender(msg.sender)
+    {
         _pushPrices(prices);
 
-        // Pull aTokens from user -> Router
-        uint256 pullAmount = amount == type(uint256).max
-            ? IERC20(aToken).balanceOf(msg.sender)
-            : amount;
+        address aToken = pool.getReserveData(asset).aTokenAddress;
+        uint256 pullAmount = amount == type(uint256).max ? IERC20(aToken).balanceOf(msg.sender) : amount;
         IERC20(aToken).safeTransferFrom(msg.sender, address(this), pullAmount);
 
-        // Withdraw underlying from Pool -> user
         pool.withdraw(asset, pullAmount, msg.sender);
     }
 
-    // ─── Liquidation ────────────────────────────────────────────────
-    // Liquidator approves debtAsset to Router.
-    // Pool sends seized collateral to msg.sender=Router -> forwarded to liquidator.
-
+    /// @notice Liquidate `user`. Liquidator approves debtAsset upfront.
     function liquidateWithPrices(
         PriceUpdate[] calldata prices,
         address collateralAsset,
@@ -184,34 +168,23 @@ contract KaskadRouter is ReentrancyGuard {
         address user,
         uint256 debtToCover,
         bool receiveAToken
-    ) external nonReentrant withSender {
+    ) external nonReentrant withSender(user) {
         _pushPrices(prices);
 
-        // Pre-compute which token the pool will deliver so we can snapshot
-        // its balance BEFORE the liquidation call.
-        address seizedAsset = receiveAToken
-            ? pool.getReserveData(collateralAsset).aTokenAddress
-            : collateralAsset;
+        address seizedAsset =
+            receiveAToken ? pool.getReserveData(collateralAsset).aTokenAddress : collateralAsset;
 
-        // Pull debt tokens from liquidator.
-        IERC20(debtAsset).safeTransferFrom(msg.sender, address(this), debtToCover);
-        IERC20(debtAsset).forceApprove(address(pool), debtToCover);
-
-        // Snapshot balances IMMEDIATELY before the pool call. The refund
-        // we forward to the liquidator is strictly the delta caused by
-        // liquidation — never any pre-existing balance that was donated
-        // to (or stuck on) the router (audit M-1: the old implementation
-        // swept `balanceOf(this)` wholesale, so a griefer could leave
-        // tokens on the router and hand them to the next liquidator).
+        // Snapshot BEFORE pulling the liquidator's deposit — refund is the
+        // liquidation delta only, donations and unused remainder both flow
+        // back to the caller correctly.
         uint256 preSeized = IERC20(seizedAsset).balanceOf(address(this));
         uint256 preDebt = IERC20(debtAsset).balanceOf(address(this));
 
+        IERC20(debtAsset).safeTransferFrom(msg.sender, address(this), debtToCover);
+        IERC20(debtAsset).forceApprove(address(pool), debtToCover);
+
         pool.liquidationCall(collateralAsset, debtAsset, user, debtToCover, receiveAToken);
 
-        // Forward the seized collateral delta. Skip the same-asset case
-        // (seized == debt) — the combined balance delta is already
-        // captured by the debt refund branch below, so transferring it
-        // here would double-send.
         if (seizedAsset != debtAsset) {
             uint256 postSeized = IERC20(seizedAsset).balanceOf(address(this));
             if (postSeized > preSeized) {
@@ -219,8 +192,6 @@ contract KaskadRouter is ReentrancyGuard {
             }
         }
 
-        // Refund the debt-token delta — the partial-liquidation leftover,
-        // plus (if seized == debt) the seized amount itself.
         uint256 postDebt = IERC20(debtAsset).balanceOf(address(this));
         if (postDebt > preDebt) {
             IERC20(debtAsset).safeTransfer(msg.sender, postDebt - preDebt);

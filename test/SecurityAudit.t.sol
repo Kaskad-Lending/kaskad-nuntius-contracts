@@ -414,6 +414,8 @@ contract SecurityAuditTest is Test {
         // walked away with the full 1000e18.
         assertEq(collateral.balanceOf(liquidator), 0);
         assertEq(collateral.balanceOf(address(router)), 1000e18);
+        assertEq(debt.balanceOf(liquidator), 1, "unused debtToCover refunded");
+        assertEq(debt.balanceOf(address(router)), 0, "router retains no debt token");
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -543,6 +545,10 @@ contract MinimalPool is IPool {
     }
     function liquidationCall(address, address, address, uint256, bool) external {
         // Seize nothing — the griefed donation is already on the router.
+    }
+
+    function ADDRESSES_PROVIDER() external pure returns (address) {
+        return address(0);
     }
 
     function getReserveData(address) external pure returns (ReserveDataLegacy memory r) {

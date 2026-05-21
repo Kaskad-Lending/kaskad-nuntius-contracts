@@ -120,20 +120,22 @@ contract Deploy is Script {
         virtual
         returns (bytes32[] memory ids, uint8[] memory minSources)
     {
-        ids = new bytes32[](5);
-        minSources = new uint8[](5);
+        ids = new bytes32[](6);
+        minSources = new uint8[](6);
 
         // Sorted ascending — see `cast keccak` output:
         //   0x0b43…6e45  ETH/USD
         //   0x4db2…8273  IGRA/USD
+        //   0x9187…3eb0  USDT/USD
         //   0xb445…5cd2  KAS/USD
         //   0xee62…6489  BTC/USD
         //   0xff06…b7ef  USDC/USD
         ids[0] = keccak256("ETH/USD");   minSources[0] = 3;
         ids[1] = keccak256("IGRA/USD");  minSources[1] = 1;
-        ids[2] = keccak256("KAS/USD");   minSources[2] = 3;
-        ids[3] = keccak256("BTC/USD");   minSources[3] = 3;
-        ids[4] = keccak256("USDC/USD"); minSources[4] = 2;
+        ids[2] = keccak256("USDT/USD");  minSources[2] = 2;
+        ids[3] = keccak256("KAS/USD");   minSources[3] = 3;
+        ids[4] = keccak256("BTC/USD");   minSources[4] = 3;
+        ids[5] = keccak256("USDC/USD"); minSources[5] = 2;
     }
 
     // ─── Entrypoint ───────────────────────────────────────────────────────
@@ -194,12 +196,14 @@ contract Deploy is Script {
         KaskadAggregatorV3 btcAgg  = new KaskadAggregatorV3(oracle, keccak256("BTC/USD"),  "BTC / USD");
         KaskadAggregatorV3 kasAgg  = new KaskadAggregatorV3(oracle, keccak256("KAS/USD"),  "KAS / USD");
         KaskadAggregatorV3 usdcAgg = new KaskadAggregatorV3(oracle, keccak256("USDC/USD"), "USDC / USD");
+        KaskadAggregatorV3 usdtAgg = new KaskadAggregatorV3(oracle, keccak256("USDT/USD"), "USDT / USD");
         KaskadAggregatorV3 igraAgg = new KaskadAggregatorV3(oracle, keccak256("IGRA/USD"), "IGRA / USD");
 
         console.log("ETH/USD Aggregator:", address(ethAgg));
         console.log("BTC/USD Aggregator:", address(btcAgg));
         console.log("KAS/USD Aggregator:", address(kasAgg));
         console.log("USDC/USD Aggregator:", address(usdcAgg));
+        console.log("USDT/USD Aggregator:", address(usdtAgg));
         console.log("IGRA/USD Aggregator:", address(igraAgg));
     }
 }

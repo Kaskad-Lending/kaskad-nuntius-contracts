@@ -4,18 +4,17 @@ pragma solidity ^0.8.20;
 import "forge-std/Test.sol";
 import "../src/KaskadPriceOracle.sol";
 import "../src/KaskadAggregatorV3.sol";
-import "./mocks/MockVerifiers.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 
 contract KaskadPriceOracleTest is Test {
     KaskadPriceOracle oracle;
     KaskadAggregatorV3 ethAggregator;
-    MockAttestationVerifier mockVerifier;
 
     uint256 internal signerPrivateKey;
     address internal signer;
-    address internal admin = address(0xAD31);
+    address internal owner = address(0xAD31);
 
-    bytes32 internal constant EXPECTED_PCR0 = keccak256("kaskad-oracle:v0.1");
     bytes32 internal constant ETH_USD = keccak256("ETH/USD");
     bytes32 internal constant BTC_USD = keccak256("BTC/USD");
 
@@ -25,10 +24,10 @@ contract KaskadPriceOracleTest is Test {
         signerPrivateKey = 0xA11CE;
         signer = vm.addr(signerPrivateKey);
 
-        mockVerifier = new MockAttestationVerifier(EXPECTED_PCR0);
-        oracle = new KaskadPriceOracle(EXPECTED_PCR0, address(mockVerifier), admin);
+        oracle = new KaskadPriceOracle(owner);
 
-        oracle.registerEnclave(abi.encode(signer));
+        vm.prank(owner);
+        oracle.addSigner(signer);
 
         bytes32[] memory ids = new bytes32[](2);
         uint8[] memory mins = new uint8[](2);
@@ -39,7 +38,7 @@ contract KaskadPriceOracleTest is Test {
         ethAggregator = new KaskadAggregatorV3(address(oracle), ETH_USD, "ETH / USD");
     }
 
-    /// @dev Sort ids ascending and call registerAssets as admin.
+    /// @dev Sort ids ascending and call registerAssets as owner.
     function _registerAssets(
         KaskadPriceOracle o,
         bytes32[] memory ids,
@@ -54,7 +53,7 @@ contract KaskadPriceOracleTest is Test {
                 }
             }
         }
-        vm.prank(admin);
+        vm.prank(owner);
         o.registerAssets(ids, mins);
     }
 
@@ -88,138 +87,233 @@ contract KaskadPriceOracleTest is Test {
         oracle.updatePrice(assetId, price, timestamp, numSources, sourcesHash, sig);
     }
 
-    // ─── Permissionless: No Owner ────────────────────────────────────
+    // ─── Owner / signer set ──────────────────────────────────────────
 
-    function test_no_owner_functions() public view {
-        // Contract has NO owner(), NO setOracleSigner(), NO transferOwnership().
-        // Signer was added to the valid-signer set via attestation.
-        assertTrue(oracle.validSigner(signer));
-        assertEq(oracle.signerCount(), 1);
+    function test_owner_is_admin() public view {
+        assertEq(oracle.owner(), owner);
     }
 
     function test_validSigner_getter() public view {
         assertTrue(oracle.validSigner(signer));
         assertTrue(oracle.isValidSigner(signer));
         assertFalse(oracle.validSigner(address(0xDEAD)));
+        assertEq(oracle.signerCount(), 1);
     }
 
-    function test_immutable_config() public view {
-        assertEq(oracle.expectedPCR0(), EXPECTED_PCR0);
-        assertEq(address(oracle.verifier()), address(mockVerifier));
+    function test_constants() public view {
         assertEq(oracle.DECIMALS(), 8);
     }
 
-    // ─── Admin Transfer ──────────────────────────────────────────────
+    // ─── Ownership Transfer (Ownable2Step) ───────────────────────────
 
-    function test_transferAdmin_success() public {
-        address newAdmin = address(0xA0D1);
+    function test_transferOwnership_two_step_success() public {
+        address newOwner = address(0xA0D1);
 
         vm.expectEmit(true, true, false, false);
-        emit KaskadPriceOracle.AdminTransferred(admin, newAdmin);
+        emit Ownable2Step.OwnershipTransferStarted(owner, newOwner);
 
-        vm.prank(admin);
-        oracle.transferAdmin(newAdmin);
+        vm.prank(owner);
+        oracle.transferOwnership(newOwner);
 
-        assertEq(oracle.admin(), newAdmin);
+        // Step 1: ownership still belongs to the old owner; pending set.
+        assertEq(oracle.owner(), owner);
+        assertEq(oracle.pendingOwner(), newOwner);
+
+        // Step 2: new owner accepts.
+        vm.prank(newOwner);
+        oracle.acceptOwnership();
+        assertEq(oracle.owner(), newOwner);
+        assertEq(oracle.pendingOwner(), address(0));
     }
 
-    function test_transferAdmin_reverts_not_admin() public {
+    function test_transferOwnership_reverts_not_owner() public {
         vm.prank(address(0xCAFE));
-        vm.expectRevert(KaskadPriceOracle.NotAdmin.selector);
-        oracle.transferAdmin(address(0xA0D1));
+        vm.expectRevert(
+            abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, address(0xCAFE))
+        );
+        oracle.transferOwnership(address(0xA0D1));
     }
 
-    function test_transferAdmin_reverts_zero_address() public {
-        vm.prank(admin);
-        vm.expectRevert(KaskadPriceOracle.ZeroAddress.selector);
-        oracle.transferAdmin(address(0));
+    function test_acceptOwnership_reverts_wrong_caller() public {
+        address newOwner = address(0xA0D1);
+        vm.prank(owner);
+        oracle.transferOwnership(newOwner);
+
+        vm.prank(address(0xCAFE));
+        vm.expectRevert(
+            abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, address(0xCAFE))
+        );
+        oracle.acceptOwnership();
     }
 
-    function test_transferAdmin_old_admin_loses_registerAssets() public {
-        address newAdmin = address(0xA0D1);
-        vm.prank(admin);
-        oracle.transferAdmin(newAdmin);
+    function test_old_owner_loses_registerAssets_after_transfer() public {
+        address newOwner = address(0xA0D1);
+        vm.prank(owner);
+        oracle.transferOwnership(newOwner);
+        vm.prank(newOwner);
+        oracle.acceptOwnership();
 
         bytes32[] memory ids = new bytes32[](1);
         uint8[] memory mins = new uint8[](1);
         ids[0] = ETH_USD; mins[0] = 3;
 
-        // Old admin can no longer register assets.
-        vm.prank(admin);
-        vm.expectRevert(KaskadPriceOracle.NotAdmin.selector);
+        vm.prank(owner);
+        vm.expectRevert(
+            abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, owner)
+        );
         oracle.registerAssets(ids, mins);
 
-        // New admin can.
-        vm.prank(newAdmin);
+        vm.prank(newOwner);
         oracle.registerAssets(ids, mins);
         bytes32[] memory registered = oracle.registeredAssetIds();
         assertEq(registered.length, 1);
         assertEq(registered[0], ETH_USD);
     }
 
-    // ─── Enclave Registration ────────────────────────────────────────
+    // ─── Signer management ───────────────────────────────────────────
 
-    function test_registerEnclave_success() public {
-        // Deploy fresh oracle
-        KaskadPriceOracle fresh = new KaskadPriceOracle(EXPECTED_PCR0, address(mockVerifier), admin);
+    function test_addSigner_success() public {
+        KaskadPriceOracle fresh = new KaskadPriceOracle(owner);
 
-        // Anyone can register
-        vm.prank(address(0xCAFE)); // random caller
-        fresh.registerEnclave(abi.encode(signer));
+        vm.expectEmit(true, false, false, true);
+        emit KaskadPriceOracle.SignerAdded(signer);
+
+        vm.prank(owner);
+        fresh.addSigner(signer);
 
         assertTrue(fresh.validSigner(signer));
         assertEq(fresh.signerCount(), 1);
     }
 
-    function test_registerEnclave_idempotent() public {
-        // setUp registered `signer` once. A second call with the same
-        // attestation is a no-op: signerCount stays 1, no additional
-        // EnclaveRegistered event.
-        assertEq(oracle.signerCount(), 1);
-        oracle.registerEnclave(abi.encode(signer));
-        assertEq(oracle.signerCount(), 1);
-        assertTrue(oracle.validSigner(signer));
+    function test_addSigner_reverts_non_owner() public {
+        vm.prank(address(0xCAFE));
+        vm.expectRevert(
+            abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, address(0xCAFE))
+        );
+        oracle.addSigner(address(0xBEEF));
     }
 
-    function test_registerEnclave_revert_invalid_attestation() public {
-        FailingAttestationVerifier failVerifier = new FailingAttestationVerifier();
-        KaskadPriceOracle oracleWithFailVerifier = new KaskadPriceOracle(
-            EXPECTED_PCR0,
-            address(failVerifier),
-            admin
-        );
-
-        vm.expectRevert(KaskadPriceOracle.InvalidAttestation.selector);
-        oracleWithFailVerifier.registerEnclave(hex"00");
+    function test_addSigner_reverts_zero_address() public {
+        vm.prank(owner);
+        vm.expectRevert(KaskadPriceOracle.ZeroAddress.selector);
+        oracle.addSigner(address(0));
     }
 
-    function test_registerEnclave_revert_pcr0_mismatch() public {
-        WrongPCR0Verifier wrongVerifier = new WrongPCR0Verifier(signer);
-        KaskadPriceOracle oracleWithWrongPCR = new KaskadPriceOracle(
-            EXPECTED_PCR0,
-            address(wrongVerifier),
-            admin
-        );
-
+    function test_addSigner_reverts_duplicate() public {
+        vm.prank(owner);
         vm.expectRevert(
             abi.encodeWithSelector(
-                KaskadPriceOracle.PCR0Mismatch.selector,
-                bytes32(uint256(0xDEAD)),
-                EXPECTED_PCR0
+                KaskadPriceOracle.SignerAlreadyRegistered.selector,
+                signer
             )
         );
-        oracleWithWrongPCR.registerEnclave(hex"00");
+        oracle.addSigner(signer);
     }
 
-    function test_registerEnclave_fresh_oracle_adds_signer() public {
-        // A fresh oracle wired to a different verifier accepts ITS signer
-        // into its own set. Doesn't touch any other oracle's set — each
-        // deployment is independent.
-        address otherSigner = address(0xBEEF);
-        MockAttestationVerifier otherVerifier = new MockAttestationVerifier(EXPECTED_PCR0);
-        KaskadPriceOracle o = new KaskadPriceOracle(EXPECTED_PCR0, address(otherVerifier), admin);
+    function test_addSigner_multiple_signers() public {
+        address signer2 = address(0xBEEF);
+        vm.prank(owner);
+        oracle.addSigner(signer2);
 
-        o.registerEnclave(abi.encode(otherSigner));
+        assertTrue(oracle.validSigner(signer));
+        assertTrue(oracle.validSigner(signer2));
+        assertEq(oracle.signerCount(), 2);
+    }
+
+    function test_removeSigner_success() public {
+        vm.expectEmit(true, false, false, true);
+        emit KaskadPriceOracle.SignerRemoved(signer);
+
+        vm.prank(owner);
+        oracle.removeSigner(signer);
+
+        assertFalse(oracle.validSigner(signer));
+        assertEq(oracle.signerCount(), 0);
+    }
+
+    function test_removeSigner_reverts_non_owner() public {
+        vm.prank(address(0xCAFE));
+        vm.expectRevert(
+            abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, address(0xCAFE))
+        );
+        oracle.removeSigner(signer);
+    }
+
+    function test_removeSigner_reverts_not_registered() public {
+        vm.prank(owner);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                KaskadPriceOracle.SignerNotRegistered.selector,
+                address(0xBEEF)
+            )
+        );
+        oracle.removeSigner(address(0xBEEF));
+    }
+
+    function test_removeSigner_invalidates_signatures() public {
+        // Sanity: a price update from `signer` works.
+        _submitPrice(ETH_USD, 212926000000, 1710000000, 4);
+
+        // Revoke signer.
+        vm.prank(owner);
+        oracle.removeSigner(signer);
+
+        // Subsequent price update with the same signer's signature is
+        // rejected. signerCount == 0 → NoEnclaveRegistered short-circuits
+        // before the signature check.
+        vm.warp(1710000010);
+        bytes32 sourcesHash = keccak256("test_sources");
+        bytes memory sig = _signUpdate(ETH_USD, 213000000000, 1710000010, 4, sourcesHash);
+
+        vm.expectRevert(KaskadPriceOracle.NoEnclaveRegistered.selector);
+        oracle.updatePrice(ETH_USD, 213000000000, 1710000010, 4, sourcesHash, sig);
+    }
+
+    function test_removeSigner_keeps_other_signers_active() public {
+        address signer2Pk = address(uint160(0xBEEF));
+        uint256 signer2Key = 0xBEEF1;
+        address signer2 = vm.addr(signer2Key);
+        signer2Pk; // unused
+
+        vm.prank(owner);
+        oracle.addSigner(signer2);
+
+        // Remove the original signer.
+        vm.prank(owner);
+        oracle.removeSigner(signer);
+        assertEq(oracle.signerCount(), 1);
+        assertTrue(oracle.validSigner(signer2));
+
+        // signer2's signature still verifies.
+        bytes32 sourcesHash = keccak256("test_sources");
+        bytes32 messageHash = keccak256(
+            abi.encodePacked(ETH_USD, uint256(212926000000), uint256(1710000000), uint8(4), sourcesHash)
+        );
+        bytes32 ethSignedHash = keccak256(
+            abi.encodePacked("\x19Ethereum Signed Message:\n32", messageHash)
+        );
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(signer2Key, ethSignedHash);
+        oracle.updatePrice(
+            ETH_USD,
+            212926000000,
+            1710000000,
+            4,
+            sourcesHash,
+            abi.encodePacked(r, s, v)
+        );
+
+        (uint256 price, , , ) = oracle.getLatestPrice(ETH_USD);
+        assertEq(price, 212926000000);
+    }
+
+    function test_addSigner_per_oracle_isolation() public {
+        // A signer added to one oracle has no effect on another.
+        address otherSigner = address(0xBEEF);
+        KaskadPriceOracle o = new KaskadPriceOracle(owner);
+
+        vm.prank(owner);
+        o.addSigner(otherSigner);
+
         assertTrue(o.validSigner(otherSigner));
         assertFalse(o.validSigner(signer));
         assertEq(o.signerCount(), 1);
@@ -251,9 +345,9 @@ contract KaskadPriceOracleTest is Test {
     function test_updatePrice_increments_roundId() public {
         _submitPrice(ETH_USD, 212926000000, 1710000000, 4);
         vm.warp(1710000010);
-        _submitPrice(ETH_USD, 213000000000, 1710000010, 5); // +10s
+        _submitPrice(ETH_USD, 213000000000, 1710000010, 5);
         vm.warp(1710000020);
-        _submitPrice(ETH_USD, 213100000000, 1710000020, 3); // +10s
+        _submitPrice(ETH_USD, 213100000000, 1710000020, 3);
 
         (, , , uint80 roundId) = oracle.getLatestPrice(ETH_USD);
         assertEq(roundId, 3);
@@ -273,7 +367,7 @@ contract KaskadPriceOracleTest is Test {
     function test_updatePrice_history() public {
         _submitPrice(ETH_USD, 100000000000, 1710000000, 3);
         vm.warp(1710000010);
-        _submitPrice(ETH_USD, 100100000000, 1710000010, 4); // +0.1%, within circuit breaker
+        _submitPrice(ETH_USD, 100100000000, 1710000010, 4);
 
         (uint256 price1, uint256 ts1, ) = oracle.getRoundData(ETH_USD, 1);
         assertEq(price1, 100000000000);
@@ -286,8 +380,7 @@ contract KaskadPriceOracleTest is Test {
     // ─── Rejections ──────────────────────────────────────────────────
 
     function test_updatePrice_reverts_no_enclave() public {
-        KaskadPriceOracle unregistered = new KaskadPriceOracle(EXPECTED_PCR0, address(mockVerifier), admin);
-        // Don't register enclave
+        KaskadPriceOracle unregistered = new KaskadPriceOracle(owner);
 
         uint256 ts = block.timestamp;
         bytes32 sourcesHash = keccak256("test");
@@ -339,28 +432,26 @@ contract KaskadPriceOracleTest is Test {
     // ─── Circuit Breaker ─────────────────────────────────────────────
 
     function test_circuit_breaker_rejects_extreme_price_change() public {
-        _submitPrice(ETH_USD, 100000000000, 1710000000, 4); // $1000
+        _submitPrice(ETH_USD, 100000000000, 1710000000, 4);
 
         vm.warp(1710000010);
-        // Try to update to $1200 = +20% > 15% limit
         bytes32 sourcesHash = keccak256("test_sources");
         bytes memory sig = _signUpdate(ETH_USD, 120000000000, 1710000010, 4, sourcesHash);
 
         vm.expectRevert(
             abi.encodeWithSelector(
                 KaskadPriceOracle.PriceChangeExceedsLimit.selector,
-                uint256(2000), // 20% = 2000 bps
-                uint256(1500)  // max 15%
+                uint256(2000),
+                uint256(1500)
             )
         );
         oracle.updatePrice(ETH_USD, 120000000000, 1710000010, 4, sourcesHash, sig);
     }
 
     function test_circuit_breaker_allows_normal_price_change() public {
-        _submitPrice(ETH_USD, 100000000000, 1710000000, 4); // $1000
+        _submitPrice(ETH_USD, 100000000000, 1710000000, 4);
 
         vm.warp(1710000010);
-        // Update to $1100 = +10% < 15% limit → should pass
         _submitPrice(ETH_USD, 110000000000, 1710000010, 4);
 
         (uint256 price, , , ) = oracle.getLatestPrice(ETH_USD);
@@ -368,7 +459,6 @@ contract KaskadPriceOracleTest is Test {
     }
 
     function test_circuit_breaker_first_update_no_limit() public {
-        // First update has no previous price, so no circuit breaker
         _submitPrice(ETH_USD, 999999000000, 1710000000, 4);
 
         (uint256 price, , , ) = oracle.getLatestPrice(ETH_USD);
@@ -381,7 +471,6 @@ contract KaskadPriceOracleTest is Test {
         _submitPrice(ETH_USD, 100000000000, 1710000000, 4);
 
         vm.warp(1710000010);
-        // Update after 10 seconds → should pass
         _submitPrice(ETH_USD, 100010000000, 1710000010, 4);
 
         (uint256 price, , , ) = oracle.getLatestPrice(ETH_USD);
@@ -419,28 +508,24 @@ contract KaskadPriceOracleTest is Test {
     // ─── Circuit Breaker: Staleness Bypass ─────────────────────────
 
     function test_circuit_breaker_resume_allows_25pct_with_doubled_quorum() public {
-        // After >4 h silence the circuit breaker loosens from 15 % to 30 %,
-        // but ONLY if the caller doubles the registered quorum. ETH/USD
-        // minSources = 3 → resume requires 6.
-        _submitPrice(ETH_USD, 100000000000, 1710000000, 6); // $1000
+        _submitPrice(ETH_USD, 100000000000, 1710000000, 6);
 
         vm.warp(1710000000 + 5 hours);
         uint256 ts = block.timestamp;
-        _submitPrice(ETH_USD, 125000000000, ts, 6); // +25 % at quorum 6 → accepted.
+        _submitPrice(ETH_USD, 125000000000, ts, 6);
 
         (uint256 price, , , ) = oracle.getLatestPrice(ETH_USD);
         assertEq(price, 125000000000);
     }
 
     function test_circuit_breaker_resume_rejects_40pct_even_with_quorum() public {
-        // Even with the doubled quorum, > 30 % change reverts on the cap.
         _submitPrice(ETH_USD, 100000000000, 1710000000, 6);
 
         vm.warp(1710000000 + 5 hours);
         uint256 ts = block.timestamp;
 
         bytes32 sourcesHash = keccak256("test_sources");
-        bytes memory sig = _signUpdate(ETH_USD, 140000000000, ts, 6, sourcesHash); // +40 %
+        bytes memory sig = _signUpdate(ETH_USD, 140000000000, ts, 6, sourcesHash);
         vm.expectRevert(
             abi.encodeWithSelector(
                 KaskadPriceOracle.PriceChangeExceedsLimit.selector,
@@ -452,8 +537,6 @@ contract KaskadPriceOracleTest is Test {
     }
 
     function test_circuit_breaker_resume_no_extra_quorum() public {
-        // After 4 h silence: loosened cap (30 %) applies; normal
-        // minSources is enough to resume.
         _submitPrice(ETH_USD, 100000000000, 1710000000, 6);
 
         vm.warp(1710000000 + 5 hours);
@@ -468,9 +551,8 @@ contract KaskadPriceOracleTest is Test {
     }
 
     function test_circuit_breaker_NOT_bypassed_within_staleness() public {
-        _submitPrice(ETH_USD, 100000000000, 1710000000, 4); // $1000
+        _submitPrice(ETH_USD, 100000000000, 1710000000, 4);
 
-        // Jump 1 hour — within CIRCUIT_BREAKER_STALENESS (4h)
         vm.warp(1710000000 + 1 hours);
         uint256 ts = block.timestamp;
 
@@ -480,7 +562,7 @@ contract KaskadPriceOracleTest is Test {
         vm.expectRevert(
             abi.encodeWithSelector(
                 KaskadPriceOracle.PriceChangeExceedsLimit.selector,
-                uint256(5000), // 50%
+                uint256(5000),
                 uint256(1500)
             )
         );
@@ -490,7 +572,6 @@ contract KaskadPriceOracleTest is Test {
     // ─── Future Timestamp Boundary ──────────────────────────────────
 
     function test_future_timestamp_at_boundary_allowed() public {
-        // Exactly MAX_FUTURE_TIMESTAMP (5 min) in the future — should pass
         uint256 ts = block.timestamp + 5 minutes;
         _submitPrice(ETH_USD, 212926000000, ts, 4);
 
@@ -499,8 +580,6 @@ contract KaskadPriceOracleTest is Test {
     }
 
     function test_future_timestamp_allowed() public {
-        // Future timestamps are allowed — enclave uses exchange server time,
-        // host cannot manipulate. No Chronos-DoS risk.
         uint256 ts = block.timestamp + 1 hours;
         _submitPrice(ETH_USD, 212926000000, ts, 4);
 
@@ -551,17 +630,16 @@ contract KaskadPriceOracleTest is Test {
     // ─── Circuit Breaker: Price Decrease ─────────────────────────────
 
     function test_circuit_breaker_rejects_extreme_price_decrease() public {
-        _submitPrice(ETH_USD, 100000000000, 1710000000, 4); // $1000
+        _submitPrice(ETH_USD, 100000000000, 1710000000, 4);
 
         vm.warp(1710000010);
-        // -20% from $1000 to $800
         bytes32 sourcesHash = keccak256("test_sources");
         bytes memory sig = _signUpdate(ETH_USD, 80000000000, 1710000010, 4, sourcesHash);
 
         vm.expectRevert(
             abi.encodeWithSelector(
                 KaskadPriceOracle.PriceChangeExceedsLimit.selector,
-                uint256(2000), // 20%
+                uint256(2000),
                 uint256(1500)
             )
         );
@@ -614,40 +692,35 @@ contract KaskadPriceOracleTest is Test {
         emit log_named_uint("updatePrice gas (cold)", gasUsed);
     }
 
-    function test_gas_registerEnclave() public {
-        KaskadPriceOracle fresh = new KaskadPriceOracle(EXPECTED_PCR0, address(mockVerifier), admin);
+    function test_gas_addSigner() public {
+        KaskadPriceOracle fresh = new KaskadPriceOracle(owner);
 
+        vm.prank(owner);
         uint256 gasBefore = gasleft();
-        fresh.registerEnclave(abi.encode(signer));
+        fresh.addSigner(signer);
         uint256 gasUsed = gasBefore - gasleft();
 
-        assertLt(gasUsed, 200_000);
-        emit log_named_uint("registerEnclave gas", gasUsed);
+        assertLt(gasUsed, 100_000);
+        emit log_named_uint("addSigner gas", gasUsed);
     }
 }
 
 // ─── E2E: Full Relayer Flow ──────────────────────────────────────────────
-// Simulates the complete path: deploy → register enclave → relayer submits
-// signed prices for all 5 assets → prices readable via AggregatorV3 wrappers.
 
 contract RelayerE2ETest is Test {
     KaskadPriceOracle oracle;
-    MockAttestationVerifier mockVerifier;
 
-    // AggregatorV3 wrappers per asset
     KaskadAggregatorV3 ethAgg;
     KaskadAggregatorV3 btcAgg;
     KaskadAggregatorV3 kasAgg;
     KaskadAggregatorV3 usdcAgg;
     KaskadAggregatorV3 igraAgg;
 
-    uint256 internal signerPk;   // enclave signer key
+    uint256 internal signerPk;
     address internal signerAddr;
 
-    address internal relayer = address(0xBE1A);  // permissionless gas-payer
-    address internal admin = address(0xAD31);
-
-    bytes32 internal constant PCR0 = keccak256("kaskad-oracle:v0.1");
+    address internal relayer = address(0xBE1A);
+    address internal owner = address(0xAD31);
 
     bytes32 internal constant ETH_USD  = keccak256("ETH/USD");
     bytes32 internal constant BTC_USD  = keccak256("BTC/USD");
@@ -663,9 +736,9 @@ contract RelayerE2ETest is Test {
         signerPk = 0xA11CE;
         signerAddr = vm.addr(signerPk);
 
-        mockVerifier = new MockAttestationVerifier(PCR0);
-        oracle = new KaskadPriceOracle(PCR0, address(mockVerifier), admin);
-        oracle.registerEnclave(abi.encode(signerAddr));
+        oracle = new KaskadPriceOracle(owner);
+        vm.prank(owner);
+        oracle.addSigner(signerAddr);
 
         bytes32[] memory ids = new bytes32[](5);
         uint8[] memory mins = new uint8[](5);
@@ -697,7 +770,7 @@ contract RelayerE2ETest is Test {
                 }
             }
         }
-        vm.prank(admin);
+        vm.prank(owner);
         o.registerAssets(ids, mins);
     }
 
@@ -719,16 +792,13 @@ contract RelayerE2ETest is Test {
         oracle.updatePrice(assetId, price, ts, sources, srcHash, sig);
     }
 
-    // ─── E2E: Round 1 — initial prices for all 5 assets ────────────
-
     function test_e2e_round1_all_assets() public {
-        _relayPrice(ETH_USD,   212926000000,  T0,   5); // $2129.26
-        _relayPrice(BTC_USD,  7173690000000,  T0+1, 5); // $71736.90
-        _relayPrice(KAS_USD,      11200000,   T0+2, 4); // $0.112
-        _relayPrice(USDC_USD,   100000000,    T0+3, 3); // $1.00
-        _relayPrice(IGRA_USD,    10000000,    T0+4, 3); // $0.10
+        _relayPrice(ETH_USD,   212926000000,  T0,   5);
+        _relayPrice(BTC_USD,  7173690000000,  T0+1, 5);
+        _relayPrice(KAS_USD,      11200000,   T0+2, 4);
+        _relayPrice(USDC_USD,   100000000,    T0+3, 3);
+        _relayPrice(IGRA_USD,    10000000,    T0+4, 3);
 
-        // Verify via oracle reads
         (uint256 ethP, , uint8 ethS, uint80 ethR) = oracle.getLatestPrice(ETH_USD);
         assertEq(ethP, 212926000000);
         assertEq(ethS, 5);
@@ -746,7 +816,6 @@ contract RelayerE2ETest is Test {
         (uint256 igraP, , , ) = oracle.getLatestPrice(IGRA_USD);
         assertEq(igraP, 10000000);
 
-        // Verify via AggregatorV3 wrappers (Chainlink-compatible)
         assertEq(ethAgg.latestAnswer(),  int256(uint256(212926000000)));
         assertEq(btcAgg.latestAnswer(),  int256(uint256(7173690000000)));
         assertEq(kasAgg.latestAnswer(),  int256(uint256(11200000)));
@@ -754,50 +823,36 @@ contract RelayerE2ETest is Test {
         assertEq(igraAgg.latestAnswer(), int256(uint256(10000000)));
     }
 
-    // ─── E2E: Round 2 — price updates with deviation ───────────────
-
     function test_e2e_round2_price_updates() public {
-        // Round 1
         _relayPrice(ETH_USD,  212926000000, T0,   5);
         _relayPrice(BTC_USD, 7173690000000, T0+1, 5);
 
-        // Advance 30 seconds
         vm.warp(T0 + 30);
 
-        // Round 2: ETH +1.2%, BTC -0.5% — within circuit breaker
-        _relayPrice(ETH_USD,  215481000000, T0+30,  5); // $2154.81
-        _relayPrice(BTC_USD, 7137822000000, T0+31, 5); // $71378.22
+        _relayPrice(ETH_USD,  215481000000, T0+30, 5);
+        _relayPrice(BTC_USD, 7137822000000, T0+31, 5);
 
-        // Check round IDs advanced
         (, , , uint80 ethRound) = oracle.getLatestPrice(ETH_USD);
         (, , , uint80 btcRound) = oracle.getLatestPrice(BTC_USD);
         assertEq(ethRound, 2);
         assertEq(btcRound, 2);
 
-        // Check history preserved
         (uint256 ethR1Price, , ) = oracle.getRoundData(ETH_USD, 1);
         assertEq(ethR1Price, 212926000000);
 
-        // AggregatorV3 returns latest
         (, int256 ethLatest, , uint256 ethUpdatedAt, ) = ethAgg.latestRoundData();
         assertEq(ethLatest, int256(uint256(215481000000)));
         assertEq(ethUpdatedAt, T0 + 30);
     }
-
-    // ─── E2E: Relayer stale-skip — same data twice ─────────────────
 
     function test_e2e_relayer_stale_skip() public {
         _relayPrice(ETH_USD, 212926000000, T0, 5);
 
         vm.warp(T0 + 30);
 
-        // Relayer reads getLatestPrice, sees timestamp == T0
         (, uint256 onchainTs, , ) = oracle.getLatestPrice(ETH_USD);
         assertEq(onchainTs, T0);
 
-        // Relayer has signed update with same timestamp — should NOT submit
-        // (this is what the relayer does in relay.ts: signedTs <= onchainTs → skip)
-        // If it DID submit, it would revert:
         bytes32 srcHash = keccak256(abi.encodePacked("sources_", ETH_USD, T0));
         bytes memory sig = _sign(ETH_USD, 212926000000, T0, 5, srcHash);
         vm.prank(relayer);
@@ -807,13 +862,9 @@ contract RelayerE2ETest is Test {
         oracle.updatePrice(ETH_USD, 212926000000, T0, 5, srcHash, sig);
     }
 
-    // ─── E2E: Circuit breaker protects, then staleness bypass ──────
-
     function test_e2e_circuit_breaker_then_ramped_resume() public {
-        _relayPrice(ETH_USD, 100000000000, T0, 5); // $1000
+        _relayPrice(ETH_USD, 100000000000, T0, 5);
 
-        // 30s later: flash crash to $700 (-30 %) would exceed the 15 %
-        // regular cap and is rejected.
         vm.warp(T0 + 30);
         bytes32 srcHash = keccak256(abi.encodePacked("sources_", ETH_USD, T0 + 30));
         bytes memory sig = _sign(ETH_USD, 70000000000, T0 + 30, 5, srcHash);
@@ -821,30 +872,21 @@ contract RelayerE2ETest is Test {
         vm.expectRevert();
         oracle.updatePrice(ETH_USD, 70000000000, T0 + 30, 5, srcHash, sig);
 
-        // Price stuck at $1000. 5 hours pass — the resume path opens
-        // and only the loosened 30 % cap applies. The previous extra
-        // "2× minSources" gate was dropped, so the asset's normal
-        // quorum is enough to resume. The first ramp step clamps to
-        // $750 (-25 %).
         vm.warp(T0 + 5 hours);
         uint256 ts = block.timestamp;
-        _relayPrice(ETH_USD, 75000000000, ts, 3); // -25 %, normal quorum
+        _relayPrice(ETH_USD, 75000000000, ts, 3);
 
         (uint256 price, , , ) = oracle.getLatestPrice(ETH_USD);
         assertEq(price, 75000000000);
     }
 
-    // ─── E2E: Multiple relayers submit — second one reverts ────────
-
     function test_e2e_duplicate_relayer_reverts() public {
         address relayer2 = address(0xBEEF);
 
-        // Relayer 1 submits
         _relayPrice(ETH_USD, 212926000000, T0, 5);
 
         vm.warp(T0 + 10);
 
-        // Relayer 2 has the SAME signed update (same timestamp T0)
         bytes32 srcHash = keccak256(abi.encodePacked("sources_", ETH_USD, T0));
         bytes memory sig = _sign(ETH_USD, 212926000000, T0, 5, srcHash);
 
@@ -855,16 +897,13 @@ contract RelayerE2ETest is Test {
         oracle.updatePrice(ETH_USD, 212926000000, T0, 5, srcHash, sig);
     }
 
-    // ─── E2E: Full 5-round lifecycle ───────────────────────────────
-
     function test_e2e_five_round_lifecycle() public {
-        // Simulate 5 oracle cycles, 30s apart, for ETH
         uint256[5] memory prices = [
-            uint256(212926000000),  // $2129.26
-            uint256(213200000000),  // $2132.00  +0.13%
-            uint256(212500000000),  // $2125.00  -0.33%
-            uint256(214000000000),  // $2140.00  +0.71%
-            uint256(213800000000)   // $2138.00  -0.09%
+            uint256(212926000000),
+            uint256(213200000000),
+            uint256(212500000000),
+            uint256(214000000000),
+            uint256(213800000000)
         ];
 
         for (uint256 i = 0; i < 5; i++) {
@@ -873,58 +912,43 @@ contract RelayerE2ETest is Test {
             _relayPrice(ETH_USD, prices[i], ts, 5);
         }
 
-        // Latest should be round 5
         (uint256 latestPrice, uint256 latestTs, , uint80 latestRound) =
             oracle.getLatestPrice(ETH_USD);
         assertEq(latestPrice, 213800000000);
         assertEq(latestTs, T0 + 120);
         assertEq(latestRound, 5);
 
-        // History fully preserved
         for (uint256 i = 0; i < 5; i++) {
             (uint256 hp, , ) = oracle.getRoundData(ETH_USD, uint80(i + 1));
             assertEq(hp, prices[i]);
         }
 
-        // AggregatorV3 reflects latest
         (, int256 answer, , , ) = ethAgg.latestRoundData();
         assertEq(answer, int256(uint256(213800000000)));
         assertEq(ethAgg.latestRound(), 5);
     }
 
-    // ─── E2E: Enclave re-registration (rotation) ──────────────────
-
     function test_e2e_fresh_oracle_rejects_foreign_signer() public {
-        // A signature from one oracle's signer isn't valid on another
-        // oracle with a different (independent) signer set.
         _relayPrice(ETH_USD, 212926000000, T0, 5);
 
-        // Fresh oracle, fresh verifier, fresh enclave key.
         uint256 newPk = 0xBEEF1;
         address newAddr = vm.addr(newPk);
-        MockAttestationVerifier newVerifier = new MockAttestationVerifier(PCR0);
-        KaskadPriceOracle fresh = new KaskadPriceOracle(PCR0, address(newVerifier), admin);
-        fresh.registerEnclave(abi.encode(newAddr));
+        KaskadPriceOracle fresh = new KaskadPriceOracle(owner);
+        vm.prank(owner);
+        fresh.addSigner(newAddr);
         assertTrue(fresh.validSigner(newAddr));
         assertFalse(fresh.validSigner(signerAddr));
         assertEq(fresh.signerCount(), 1);
 
-        // Admin must (re-)bless the asset quorum on the fresh oracle —
-        // otherwise updatePrice hits AssetNotRegistered before signature
-        // check fires.
         bytes32[] memory ids = new bytes32[](1);
         uint8[] memory mins = new uint8[](1);
         ids[0] = ETH_USD; mins[0] = 3;
         _registerAssetsOnto(fresh, ids, mins);
 
-        // A signature from the *other* oracle's signer is rejected here.
         bytes32 srcHash = keccak256("test");
         bytes memory oldSig = _sign(ETH_USD, 100, T0, 3, srcHash);
         vm.prank(relayer);
         vm.expectRevert(KaskadPriceOracle.InvalidSignature.selector);
         fresh.updatePrice(ETH_USD, 100, T0, 3, srcHash, oldSig);
     }
-
-    // (the `_registerAssetsOnto` helper above is shared between setUp and
-    // this rotation test; no second admin-sig variant is needed now.)
 }

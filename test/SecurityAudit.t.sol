@@ -5,9 +5,9 @@ import "forge-std/Test.sol";
 import "../src/KaskadPriceOracle.sol";
 import "../src/KaskadRouter.sol";
 import "../src/KaskadAggregatorV3.sol";
-import "./mocks/MockVerifiers.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 
 /// @title SecurityAudit
 /// @notice Proof-of-concept tests for findings from the security audit.
@@ -17,13 +17,11 @@ contract SecurityAuditTest is Test {
     // ───────── Setup ─────────
 
     KaskadPriceOracle oracle;
-    MockAttestationVerifier verifier;
 
     uint256 internal signerPk = 0xA11CE;
     address internal signerAddr;
     address internal admin = address(0xAD31);
 
-    bytes32 internal constant PCR0 = keccak256("kaskad-oracle:v0.1");
     bytes32 internal constant ETH_USD = keccak256("ETH/USD");
     bytes32 internal constant BTC_USD = keccak256("BTC/USD");
     bytes32 internal constant SRC_HASH = keccak256("sources");
@@ -33,9 +31,9 @@ contract SecurityAuditTest is Test {
     function setUp() public {
         vm.warp(T0);
         signerAddr = vm.addr(signerPk);
-        verifier = new MockAttestationVerifier(PCR0);
-        oracle = new KaskadPriceOracle(PCR0, address(verifier), admin);
-        oracle.registerEnclave(abi.encode(signerAddr));
+        oracle = new KaskadPriceOracle(admin);
+        vm.prank(admin);
+        oracle.addSigner(signerAddr);
 
         bytes32[] memory ids = new bytes32[](2);
         uint8[] memory mins = new uint8[](2);
@@ -107,9 +105,9 @@ contract SecurityAuditTest is Test {
         // signer (which is the design — anyone with a valid attestation from
         // the correct enclave image can register). A signature intended for
         // oracle #1 works on oracle #2 verbatim.
-        MockAttestationVerifier v2 = new MockAttestationVerifier(PCR0);
-        KaskadPriceOracle oracle2 = new KaskadPriceOracle(PCR0, address(v2), admin);
-        oracle2.registerEnclave(abi.encode(signerAddr));
+        KaskadPriceOracle oracle2 = new KaskadPriceOracle(admin);
+        vm.prank(admin);
+        oracle2.addSigner(signerAddr);
 
         bytes32[] memory ids2 = new bytes32[](2);
         uint8[] memory mins2 = new uint8[](2);
@@ -217,13 +215,15 @@ contract SecurityAuditTest is Test {
         _submit(oracle, ETH_USD, 1_000_000_000_000, T0 + 3, 3);
     }
 
-    /// `registerAssets` is now admin-gated. Non-admin callers must revert.
+    /// `registerAssets` is owner-gated. Non-owner callers must revert.
     function test_REGRESSION_registerAssets_rejects_non_admin() public {
         bytes32[] memory ids = new bytes32[](1);
         uint8[] memory mins = new uint8[](1);
         ids[0] = ETH_USD; mins[0] = 3;
 
-        vm.expectRevert(KaskadPriceOracle.NotAdmin.selector);
+        vm.expectRevert(
+            abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, address(0xBAD))
+        );
         vm.prank(address(0xBAD));
         oracle.registerAssets(ids, mins);
 
@@ -232,19 +232,18 @@ contract SecurityAuditTest is Test {
         oracle.registerAssets(ids, mins);
     }
 
-    /// Re-registering the enclave (legit rotation OR griefing attempt with
-    /// a same-PCR attestation) must PRESERVE the admin's quorum mapping.
-    /// Otherwise a drive-by registerEnclave would halt the oracle every
-    /// time and force admin intervention.
-    function test_REGRESSION_registerEnclave_preserves_asset_registration() public {
+    /// Adding a second signer (legit rotation) must PRESERVE the asset
+    /// quorum mapping. Owner runs `addSigner` independently of the
+    /// asset set; the two share no storage.
+    function test_REGRESSION_addSigner_preserves_asset_registration() public {
         assertEq(_minSources(oracle, ETH_USD), 3);
 
-        // The invariant we care about is asset-mapping persistence across a
-        // `registerEnclave` call. Exercising it on the existing oracle (the
-        // mock decodes the signer from the doc) is enough — re-registering
-        // the same signer is a no-op but still walks the same code path.
-        oracle.registerEnclave(abi.encode(signerAddr)); // same signer — no-op but exercises the path.
-        assertEq(_minSources(oracle, ETH_USD), 3, "asset quorum must survive re-register");
+        // Add a second enclave signer (e.g. multi-region HA).
+        address signer2 = address(0xBEEF1);
+        vm.prank(admin);
+        oracle.addSigner(signer2);
+
+        assertEq(_minSources(oracle, ETH_USD), 3, "asset quorum must survive addSigner");
     }
 
     function _minSources(KaskadPriceOracle o, bytes32 id) internal view returns (uint8) {

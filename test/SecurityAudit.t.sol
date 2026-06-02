@@ -5,6 +5,7 @@ import "forge-std/Test.sol";
 import "../src/KaskadPriceOracle.sol";
 import "../src/KaskadRouter.sol";
 import "../src/KaskadAggregatorV3.sol";
+import "./mocks/MockVerifiers.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
@@ -17,6 +18,9 @@ contract SecurityAuditTest is Test {
     // ───────── Setup ─────────
 
     KaskadPriceOracle oracle;
+    MockAttestationVerifier mockVerifier;
+
+    bytes32 internal constant LOCAL_PCR0 = bytes32(uint256(0xDEADBEEF));
 
     uint256 internal signerPk = 0xA11CE;
     address internal signerAddr;
@@ -31,9 +35,10 @@ contract SecurityAuditTest is Test {
     function setUp() public {
         vm.warp(T0);
         signerAddr = vm.addr(signerPk);
-        oracle = new KaskadPriceOracle(admin);
+        mockVerifier = new MockAttestationVerifier(LOCAL_PCR0);
+        oracle = new KaskadPriceOracle(LOCAL_PCR0, address(mockVerifier), admin);
         vm.prank(admin);
-        oracle.addSigner(signerAddr);
+        oracle.registerEnclave(abi.encode(signerAddr));
 
         bytes32[] memory ids = new bytes32[](2);
         uint8[] memory mins = new uint8[](2);
@@ -105,9 +110,10 @@ contract SecurityAuditTest is Test {
         // signer (which is the design — anyone with a valid attestation from
         // the correct enclave image can register). A signature intended for
         // oracle #1 works on oracle #2 verbatim.
-        KaskadPriceOracle oracle2 = new KaskadPriceOracle(admin);
+        KaskadPriceOracle oracle2 =
+            new KaskadPriceOracle(LOCAL_PCR0, address(mockVerifier), admin);
         vm.prank(admin);
-        oracle2.addSigner(signerAddr);
+        oracle2.registerEnclave(abi.encode(signerAddr));
 
         bytes32[] memory ids2 = new bytes32[](2);
         uint8[] memory mins2 = new uint8[](2);
@@ -232,18 +238,18 @@ contract SecurityAuditTest is Test {
         oracle.registerAssets(ids, mins);
     }
 
-    /// Adding a second signer (legit rotation) must PRESERVE the asset
-    /// quorum mapping. Owner runs `addSigner` independently of the
-    /// asset set; the two share no storage.
-    function test_REGRESSION_addSigner_preserves_asset_registration() public {
+    /// Registering a second enclave (legit rotation) must PRESERVE the
+    /// asset quorum mapping. Owner runs `registerEnclave` independently
+    /// of the asset set; the two share no storage.
+    function test_REGRESSION_registerEnclave_preserves_asset_registration() public {
         assertEq(_minSources(oracle, ETH_USD), 3);
 
         // Add a second enclave signer (e.g. multi-region HA).
         address signer2 = address(0xBEEF1);
         vm.prank(admin);
-        oracle.addSigner(signer2);
+        oracle.registerEnclave(abi.encode(signer2));
 
-        assertEq(_minSources(oracle, ETH_USD), 3, "asset quorum must survive addSigner");
+        assertEq(_minSources(oracle, ETH_USD), 3, "asset quorum must survive registerEnclave");
     }
 
     function _minSources(KaskadPriceOracle o, bytes32 id) internal view returns (uint8) {

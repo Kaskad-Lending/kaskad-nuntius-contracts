@@ -7,12 +7,15 @@ import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 
 /// @title KaskadPriceOracle
-/// @notice TEE-backed price oracle. Owner whitelists enclave signing
-///         addresses (`addSigner`/`removeSigner`); off-chain enclaves sign
-///         per-asset price updates with EIP-191; anyone relays them on
-///         chain. Quorum commitment is set by the owner via
-///         `registerAssets`. Owner controls signer set and asset set;
-///         owner cannot sign prices.
+/// @notice TEE-backed price oracle. Enclave signers register via
+///         `registerEnclave(attestationDoc)`: a valid Nitro attestation
+///         matching `expectedPCR0` is required AND the call is `onlyOwner`
+///         (dual gate — closes the seal-and-leak vector where an attacker
+///         running identical-PCR infrastructure self-registers). The
+///         owner cannot whitelist a signer without a valid attestation;
+///         attestation alone is not sufficient. `removeSigner` is
+///         `onlyOwner` for emergency revocation. Quorum + price logic is
+///         unchanged.
 contract KaskadPriceOracle is Ownable2Step {
     using MessageHashUtils for bytes32;
 
@@ -31,6 +34,14 @@ contract KaskadPriceOracle is Ownable2Step {
     struct AssetParams {
         uint8 minSources;
     }
+
+    // ─── Immutable Config ────────────────────────────────────────────────
+
+    /// @notice PCR0 the enclave attestation must match. Pinned at deploy.
+    bytes32 public immutable expectedPCR0;
+
+    /// @notice On-chain attestation verifier (Nitro CBOR/COSE/P-384 path).
+    IAttestationVerifier public immutable verifier;
 
     // ─── Constants ───────────────────────────────────────────────────────
 
@@ -51,9 +62,11 @@ contract KaskadPriceOracle is Ownable2Step {
 
     // ─── State ───────────────────────────────────────────────────────────
 
-    /// @notice Whitelist of enclave-signing addresses. Owner-managed via
-    ///         `addSigner`/`removeSigner`. A signed price update is accepted
-    ///         iff the recovered ECDSA address is in this set.
+    /// @notice Whitelist of enclave-signing addresses. Populated by
+    ///         `registerEnclave` (attestation + onlyOwner). A signed price
+    ///         update is accepted iff the recovered ECDSA address is in
+    ///         this set. There is no direct `addSigner` — every signer
+    ///         must trace back to a verified attestation.
     mapping(address => bool) public validSigner;
 
     /// @notice Count of `validSigner` members. Gates `registerAssets` and
@@ -73,7 +86,7 @@ contract KaskadPriceOracle is Ownable2Step {
 
     // ─── Events ──────────────────────────────────────────────────────────
 
-    event SignerAdded(address indexed signer);
+    event EnclaveRegistered(address indexed signer, bytes32 pcr0, uint256 timestamp);
     event SignerRemoved(address indexed signer);
     event PriceUpdated(
         bytes32 indexed assetId,
@@ -86,6 +99,8 @@ contract KaskadPriceOracle is Ownable2Step {
 
     // ─── Errors ──────────────────────────────────────────────────────────
 
+    error InvalidAttestation();
+    error PCR0Mismatch(bytes32 provided, bytes32 expected);
     error InvalidSignature();
     error StalePrice(uint256 provided, uint256 current);
     error NoEnclaveRegistered();
@@ -98,7 +113,6 @@ contract KaskadPriceOracle is Ownable2Step {
     error MismatchedLengths();
     error InvalidMinSources();
     error ZeroAddress();
-    error SignerAlreadyRegistered(address signer);
     error SignerNotRegistered(address signer);
     error FutureTimestamp(uint256 provided, uint256 maxAllowed);
     error TooManyAssets(uint256 provided, uint256 max);
@@ -106,25 +120,45 @@ contract KaskadPriceOracle is Ownable2Step {
 
     // ─── Constructor ─────────────────────────────────────────────────────
 
-    constructor(address initialOwner) Ownable(initialOwner) {
+    constructor(bytes32 _expectedPCR0, address _verifier, address initialOwner)
+        Ownable(initialOwner)
+    {
         if (initialOwner == address(0)) revert ZeroAddress();
+        if (_verifier == address(0)) revert ZeroAddress();
+        expectedPCR0 = _expectedPCR0;
+        verifier = IAttestationVerifier(_verifier);
     }
 
-    // ─── Signer set (owner-managed) ──────────────────────────────────────
+    // ─── Enclave Registration (dual gate: attestation + owner) ───────────
 
-    /// @notice Whitelist an enclave-signing address. Owner verifies the
-    ///         Nitro attestation document OFF-CHAIN before calling — there
-    ///         is no on-chain attestation verifier on this deployment.
-    function addSigner(address signer) external onlyOwner {
-        if (signer == address(0)) revert ZeroAddress();
-        if (validSigner[signer]) revert SignerAlreadyRegistered(signer);
-        validSigner[signer] = true;
-        signerCount += 1;
-        emit SignerAdded(signer);
+    /// @notice Register an enclave signer derived from a valid Nitro
+    ///         attestation. Two gates apply:
+    ///           (1) Attestation must verify on-chain and PCR0 must match
+    ///               the immutable `expectedPCR0`.
+    ///           (2) Caller must be the owner — closes seal-and-leak where
+    ///               a same-PCR attacker (e.g. identical EIF on their own
+    ///               AWS account without locked KMS) would otherwise add
+    ///               their own signer.
+    ///         Grow-only: re-registering an already-whitelisted signer
+    ///         is a no-op (no event, no count bump).
+    function registerEnclave(bytes calldata attestationDoc) external onlyOwner {
+        (bool valid, bytes32 pcr0, address enclaveAddress) =
+            verifier.verifyAttestation(attestationDoc);
+
+        if (!valid) revert InvalidAttestation();
+        if (pcr0 != expectedPCR0) revert PCR0Mismatch(pcr0, expectedPCR0);
+
+        if (!validSigner[enclaveAddress]) {
+            validSigner[enclaveAddress] = true;
+            signerCount += 1;
+            emit EnclaveRegistered(enclaveAddress, pcr0, block.timestamp);
+        }
     }
 
-    /// @notice Revoke a previously-whitelisted signer. Used to retire a
-    ///         decommissioned enclave or rotate after key compromise.
+    /// @notice Revoke a previously-whitelisted signer. Emergency lever
+    ///         for decommissioned enclaves and key compromise. No
+    ///         attestation needed — subtractive operations are safe
+    ///         under the owner-trust model.
     function removeSigner(address signer) external onlyOwner {
         if (!validSigner[signer]) revert SignerNotRegistered(signer);
         delete validSigner[signer];
@@ -276,8 +310,6 @@ contract KaskadPriceOracle is Ownable2Step {
         returns (uint256 price, uint256 timestamp, uint8 numSources)
     {
         PriceData storage data = priceHistory[assetId][roundId];
-        // Chainlink convention: revert on non-existent round, do not return
-        // a zero tuple (audit F-6).
         if (data.timestamp == 0) revert NoRoundData(assetId, roundId);
         return (data.price, data.timestamp, data.numSources);
     }
@@ -285,4 +317,13 @@ contract KaskadPriceOracle is Ownable2Step {
     function isValidSigner(address who) external view returns (bool) {
         return validSigner[who];
     }
+}
+
+/// @title IAttestationVerifier
+/// @notice Interface for TEE attestation verification.
+interface IAttestationVerifier {
+    function verifyAttestation(bytes calldata attestationDoc)
+        external
+        view
+        returns (bool valid, bytes32 pcr0, address enclaveAddress);
 }

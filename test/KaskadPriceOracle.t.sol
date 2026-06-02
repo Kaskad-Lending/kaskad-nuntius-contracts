@@ -573,7 +573,9 @@ contract KaskadPriceOracleTest is Test {
     function test_circuit_breaker_NOT_bypassed_within_staleness() public {
         _submitPrice(ETH_USD, 100000000000, 1710000000, 4);
 
-        vm.warp(1710000000 + 1 hours);
+        // Stay strictly inside the CIRCUIT_BREAKER_STALENESS window
+        // (1 h) so the tight 15 % cap is still in effect.
+        vm.warp(1710000000 + 30 minutes);
         uint256 ts = block.timestamp;
 
         bytes32 sourcesHash = keccak256("test_sources");

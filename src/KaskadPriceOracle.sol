@@ -48,7 +48,17 @@ contract KaskadPriceOracle is Ownable2Step {
     uint8  public constant DECIMALS = 8;
     uint16 public constant MAX_PRICE_CHANGE_BPS = 1500; // 15% regular cap
     uint16 public constant MAX_RESUME_CHANGE_BPS = 3000; // loosened cap after silence
-    uint256 public constant CIRCUIT_BREAKER_STALENESS = 4 hours;
+    /// @notice Window after which a stale `latestPrice` triggers
+    ///         `MAX_RESUME_CHANGE_BPS` instead of `MAX_PRICE_CHANGE_BPS`.
+    ///         1 h shrinks the attacker's wait-and-pounce window without
+    ///         imposing UX cost on honest pull-mode users: the relaxed
+    ///         regime still passes in a single transaction whenever it
+    ///         fires. The reason the relax exists at all is that pull-
+    ///         mode `latestPrice` lags natural inactivity AND real market
+    ///         dislocations; refusing to publish a >15 % move after a
+    ///         quiet hour would freeze the feed on every recovery from a
+    ///         brief outage.
+    uint256 public constant CIRCUIT_BREAKER_STALENESS = 1 hours;
 
     /// @notice Reject signed updates whose enclave-authoritative timestamp
     ///         runs > 2h ahead of `block.timestamp`. Wide cap absorbs Kasplex

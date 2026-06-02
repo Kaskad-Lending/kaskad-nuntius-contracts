@@ -9,25 +9,25 @@ import "nitro-prover/CertManager.sol";
 
 import {NitroProver} from "nitro-prover/NitroProver.sol";
 
-/// @notice Production deploy: real AWS Nitro attestation + full
-///         `registerEnclave` + `registerAssets` so the oracle is usable
-///         immediately after the script finishes. Override the hooks in
-///         `DeployLocal` to swap the verifier for a mock on anvil.
-///
-/// The oracle `admin` is set to the deployer EOA (transient): the script
-/// runs `registerEnclave` + `registerAssets` from it. Hand the role to the
-/// final multisig afterwards with `TransferAdmin.s.sol`.
+/// @notice Production deploy: CertManager + NitroProver +
+///         NitroAttestationVerifier + KaskadPriceOracle + per-asset
+///         KaskadAggregatorV3 wrappers. The deployer EOA is set as
+///         initial owner (Ownable2Step); the script runs
+///         `registerEnclave` + `registerAssets` under that ownership,
+///         then hand the role to the final multisig via
+///         `TransferAdmin.s.sol`.
 ///
 /// Required env:
-///   DEPLOYER_KEY              — uint256 private key (optional if `--private-key` passed)
+///   DEPLOYER_KEY              — uint256 deployer key (optional if `--private-key`)
 ///   ATTESTATION_DOC           — raw Nitro attestation bytes (CBOR COSE_Sign1)
 ///   EXPECTED_PCR1             — bytes32 kernel hash. MUST be non-zero (audit D-2).
 ///   EXPECTED_PCR2             — bytes32 application hash. MUST be non-zero (audit D-2).
 ///
 /// Optional env:
-///   EXPECTED_ENCLAVE_SIGNER   — address. When set, the script asserts the attestation
-///                                doc resolves to this signer (audit D-5: defends
-///                                against a substituted attestation doc that pins
+///   EXPECTED_ENCLAVE_SIGNER   — address. When set, the script asserts
+///                                the attestation doc resolves to this
+///                                signer (audit D-5: defends against a
+///                                substituted attestation doc that pins
 ///                                an attacker-controlled signer).
 contract Deploy is Script {
     // ─── Hooks (overridden in DeployLocal) ────────────────────────────────
@@ -44,10 +44,10 @@ contract Deploy is Script {
 
         bytes32 expectedPCR1 = vm.envBytes32("EXPECTED_PCR1");
         bytes32 expectedPCR2 = vm.envBytes32("EXPECTED_PCR2");
-        NitroAttestationVerifier verifier =
+        NitroAttestationVerifier v =
             new NitroAttestationVerifier(address(prover), expectedPCR1, expectedPCR2);
-        console.log("NitroAttestationVerifier:", address(verifier));
-        return IAttestationVerifier(address(verifier));
+        console.log("NitroAttestationVerifier:", address(v));
+        return IAttestationVerifier(address(v));
     }
 
     /// @notice Return the attestation document used for `registerEnclave`.
@@ -56,64 +56,60 @@ contract Deploy is Script {
         return vm.envBytes("ATTESTATION_DOC");
     }
 
-    /// @notice Cache the certificate chain inside the verifier so the
-    ///         subsequent on-chain `verifyAttestation` in `registerEnclave`
-    ///         is cheap. Prod: calls `verifyCerts`. Local: no-op.
-    function _cacheCerts(IAttestationVerifier verifier, bytes memory doc) internal virtual {
-        NitroAttestationVerifier(address(verifier)).verifyCerts(doc);
+    /// @notice Cache the certificate chain so the on-chain
+    ///         `verifyAttestation` in `registerEnclave` is cheap. Prod:
+    ///         calls `verifyCerts`. Local: no-op.
+    function _cacheCerts(IAttestationVerifier v, bytes memory doc) internal virtual {
+        NitroAttestationVerifier(address(v)).verifyCerts(doc);
     }
 
     /// @notice Extract the PCR0 that the oracle contract should be bound
-    ///         to. Prod: dry-run `verifyAttestation` to read it out of the
-    ///         attestation doc. Local: a compile-time constant that the
-    ///         mock verifier is also constructed with.
-    function _extractPCR0(IAttestationVerifier verifier, bytes memory doc)
+    ///         to. Prod: dry-run `verifyAttestation`. Local: a compile-
+    ///         time constant the mock verifier is also constructed with.
+    function _extractPCR0(IAttestationVerifier v, bytes memory doc)
         internal
         virtual
         returns (bytes32)
     {
-        (bool valid, bytes32 pcr0, address enclaveSigner) = verifier.verifyAttestation(doc);
+        (bool valid, bytes32 pcr0, address enclaveSigner) = v.verifyAttestation(doc);
         require(valid, "Attestation invalid (Root CA signature / PCR1 / PCR2 mismatch)");
-        console.log("Real AWS Nitro PCR0:");
+        console.log("Nitro PCR0:");
         console.logBytes32(pcr0);
-        console.log("Real Enclave Signer:", enclaveSigner);
+        console.log("Enclave Signer:", enclaveSigner);
         return pcr0;
     }
 
     /// @notice Pre-flight env validation. Fails fast before any
     ///         state-modifying tx so a misconfig is caught at the top
     ///         of the script, not after partial deployment.
-    /// @dev    Virtual so DeployLocal can skip — local flow uses a mock
-    ///         verifier that doesn't take PCR1/PCR2.
     function _validateEnv() internal virtual {
         bytes32 expectedPCR1 = vm.envBytes32("EXPECTED_PCR1");
         bytes32 expectedPCR2 = vm.envBytes32("EXPECTED_PCR2");
-        require(expectedPCR1 != bytes32(0), "EXPECTED_PCR1 == 0 (audit D-2): refusing to deploy a verifier that matches any kernel hash");
-        require(expectedPCR2 != bytes32(0), "EXPECTED_PCR2 == 0 (audit D-2): refusing to deploy a verifier that matches any application hash");
+        require(expectedPCR1 != bytes32(0), "EXPECTED_PCR1 == 0 (audit D-2)");
+        require(expectedPCR2 != bytes32(0), "EXPECTED_PCR2 == 0 (audit D-2)");
     }
 
-    /// @notice Optional binding: when `EXPECTED_ENCLAVE_SIGNER` env is
-    ///         set, assert the attestation doc resolves to that signer.
-    ///         Defends against an attacker who substitutes an
-    ///         alternate attestation doc with the same expected PCR0
-    ///         but a signer they control (audit D-5).
-    function _assertExpectedSigner(IAttestationVerifier verifier, bytes memory doc) internal virtual {
+    /// @notice Optional: when `EXPECTED_ENCLAVE_SIGNER` is set, assert the
+    ///         attestation doc resolves to that signer (audit D-5).
+    function _assertExpectedSigner(IAttestationVerifier v, bytes memory doc) internal virtual {
         address expected = vm.envOr("EXPECTED_ENCLAVE_SIGNER", address(0));
-        if (expected == address(0)) return; // not enforced this run
-        (, , address actual) = verifier.verifyAttestation(doc);
+        if (expected == address(0)) return;
+        (, , address actual) = v.verifyAttestation(doc);
         require(
             actual == expected,
-            "Attestation signer != EXPECTED_ENCLAVE_SIGNER (audit D-5): possible attestation-doc substitution"
+            "Attestation signer != EXPECTED_ENCLAVE_SIGNER (audit D-5)"
         );
         console.log("EXPECTED_ENCLAVE_SIGNER bound:", expected);
     }
 
-    // ─── Static config (shared by prod + local) ───────────────────────────
+    // ─── Static config ────────────────────────────────────────────────────
 
-    /// @notice Asset registration commitment. IDs are `keccak256(symbol)`
-    ///         and MUST be in strictly ascending byte order — the contract
-    ///         enforces canonical ordering in `registerAssets`.
-    ///         `min_sources` mirrors `config/assets.json` (baked into PCR0).
+    /// @notice Asset registration commitment. Sorted ascending —
+    ///         `registerAssets` enforces canonical order. Six mainnet
+    ///         (igra 38833) assets: ETH/IGRA/USDT/KAS/BTC/USDC.
+    ///         IGRA is signed by the enclave (frontend pulls it) even
+    ///         though it isn't a listed Aave reserve — must be in the
+    ///         commitment so `updatePrice` accepts it.
     function _getAssets()
         internal
         pure
@@ -123,7 +119,6 @@ contract Deploy is Script {
         ids = new bytes32[](6);
         minSources = new uint8[](6);
 
-        // Sorted ascending — see `cast keccak` output:
         //   0x0b43…6e45  ETH/USD
         //   0x4db2…8273  IGRA/USD
         //   0x9187…3eb0  USDT/USD
@@ -135,13 +130,12 @@ contract Deploy is Script {
         ids[2] = keccak256("USDT/USD");  minSources[2] = 2;
         ids[3] = keccak256("KAS/USD");   minSources[3] = 3;
         ids[4] = keccak256("BTC/USD");   minSources[4] = 3;
-        ids[5] = keccak256("USDC/USD"); minSources[5] = 2;
+        ids[5] = keccak256("USDC/USD");  minSources[5] = 2;
     }
 
     // ─── Entrypoint ───────────────────────────────────────────────────────
 
     function run() external {
-        // ─── Pre-flight env validation (fail fast before any state-modifying tx)
         _validateEnv();
 
         uint256 key = vm.envOr("DEPLOYER_KEY", uint256(0));
@@ -152,35 +146,32 @@ contract Deploy is Script {
         }
 
         // 1. Verifier stack
-        IAttestationVerifier verifier = _buildVerifier();
+        IAttestationVerifier v = _buildVerifier();
 
         // 2. Attestation doc
         bytes memory attestationDoc = _getAttestationDoc();
 
         // 3. Cache certs so on-chain verifyAttestation is cheap (prod only)
-        _cacheCerts(verifier, attestationDoc);
+        _cacheCerts(v, attestationDoc);
 
         // 4. Pin PCR0 — deployed oracle will only accept this image
-        bytes32 pcr0 = _extractPCR0(verifier, attestationDoc);
+        bytes32 pcr0 = _extractPCR0(v, attestationDoc);
 
-        // 4b. (Optional) bind to a specific expected signer — defends
-        //     against an attacker-substituted attestation doc.
-        _assertExpectedSigner(verifier, attestationDoc);
+        // 4b. (Optional) bind to a specific expected signer.
+        _assertExpectedSigner(v, attestationDoc);
 
-        // 5. Oracle — admin = deployer (transient). The deployer runs
-        //    registerEnclave + registerAssets below; hand the role to the
-        //    final multisig afterwards via TransferAdmin.s.sol.
-        address admin = key != 0 ? vm.addr(key) : msg.sender;
-        KaskadPriceOracle oracle = new KaskadPriceOracle(pcr0, address(verifier), admin);
-        console.log("KaskadPriceOracle deployed at:", address(oracle));
-        console.log("Admin (deployer; can call registerAssets):", admin);
+        // 5. Oracle — initial owner = deployer (transient). Hand off to
+        //    multisig via TransferAdmin.s.sol after setup.
+        address initialOwner = key != 0 ? vm.addr(key) : msg.sender;
+        KaskadPriceOracle oracle = new KaskadPriceOracle(pcr0, address(v), initialOwner);
+        console.log("KaskadPriceOracle:", address(oracle));
+        console.log("Owner (deployer):", initialOwner);
 
-        // 6. Register the enclave signer (permissionless; grow-only set)
+        // 6. Register the enclave signer — onlyOwner, attestation-gated.
         oracle.registerEnclave(attestationDoc);
-        console.log("Enclave registered on-chain");
+        console.log("Enclave registered");
 
-        // 7. Register asset quorum commitment — REQUIRED before any
-        //    `updatePrice` will succeed. Must be called by `admin`.
+        // 7. Register asset quorum commitment.
         (bytes32[] memory ids, uint8[] memory minSources) = _getAssets();
         oracle.registerAssets(ids, minSources);
         console.log("Registered assets:", ids.length);

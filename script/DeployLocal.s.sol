@@ -4,53 +4,41 @@ pragma solidity ^0.8.20;
 import "./Deploy.s.sol";
 import "../test/mocks/MockVerifiers.sol";
 
-/// @notice Local/anvil deploy. Swaps the Nitro verifier stack for a
-///         `MockAttestationVerifier` that returns a predetermined PCR0 and
-///         decodes the enclave signer from the attestation doc. Everything
-///         else — `registerEnclave`, `registerAssets`, aggregator
-///         deployment — is inherited from `Deploy`, so local flow matches
-///         prod flow.
+/// @notice Local/anvil deploy. Swaps the real Nitro stack for
+///         MockAttestationVerifier so no AWS attestation is needed.
+///         All other flow (registerEnclave + registerAssets + aggregators)
+///         matches prod.
 ///
 /// Required env:
 ///   DEPLOYER_KEY    — uint256 private key (or `--private-key` on CLI)
-///   ORACLE_SIGNER   — (optional) enclave-signer address the mock returns.
-///                     Passed to the mock inside the attestation doc.
-///                     Defaults to Anvil account #1.
+///
+/// Optional env:
+///   ORACLE_SIGNER   — enclave-signer address (defaults to Anvil acct #1).
+///   LOCAL_PCR0      — bytes32 PCR0 baked into mock (defaults to keccak256("local-pcr0")).
 contract DeployLocal is Deploy {
-    /// @notice Fake PCR0 — must match what `MockAttestationVerifier`
-    ///         returns. Local-only; prod derives the real one from the
-    ///         attestation document.
-    bytes32 constant LOCAL_PCR0 = keccak256("kaskad-oracle:local");
-
     address constant ANVIL_ACCOUNT_1 = 0x70997970C51812dc3A010C7d01b50e0d17dc79C8;
 
+    function _localPCR0() internal view returns (bytes32) {
+        return vm.envOr("LOCAL_PCR0", keccak256("local-pcr0"));
+    }
+
+    function _localSigner() internal view returns (address) {
+        return vm.envOr("ORACLE_SIGNER", ANVIL_ACCOUNT_1);
+    }
+
     function _buildVerifier() internal override returns (IAttestationVerifier) {
-        MockAttestationVerifier verifier = new MockAttestationVerifier(LOCAL_PCR0);
-        console.log("MockAttestationVerifier:", address(verifier));
-        return IAttestationVerifier(address(verifier));
+        MockAttestationVerifier mock = new MockAttestationVerifier(_localPCR0());
+        console.log("MockAttestationVerifier:", address(mock));
+        return IAttestationVerifier(address(mock));
     }
 
-    function _getAttestationDoc() internal view override returns (bytes memory) {
-        // The mock decodes the enclave signer from the attestation doc.
-        return abi.encode(vm.envOr("ORACLE_SIGNER", ANVIL_ACCOUNT_1));
+    function _getAttestationDoc() internal override returns (bytes memory) {
+        return abi.encode(_localSigner());
     }
 
-    function _cacheCerts(IAttestationVerifier, bytes memory) internal override {
-        // Mock verifier has no cert chain to cache.
-    }
+    function _cacheCerts(IAttestationVerifier, bytes memory) internal override {}
 
-    function _extractPCR0(IAttestationVerifier, bytes memory)
-        internal
-        pure
-        override
-        returns (bytes32)
-    {
-        return LOCAL_PCR0;
-    }
+    function _validateEnv() internal override {}
 
-    /// @notice Skip the prod env-validation gates (PCR1/PCR2). DeployLocal
-    ///         uses a mock verifier with no PCR1/PCR2 inputs.
-    function _validateEnv() internal pure override {
-        // intentional no-op — see Deploy._validateEnv NatSpec.
-    }
+    function _assertExpectedSigner(IAttestationVerifier, bytes memory) internal override {}
 }

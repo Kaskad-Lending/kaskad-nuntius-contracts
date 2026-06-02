@@ -3,97 +3,84 @@ pragma solidity ^0.8.20;
 
 import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import {MessageHashUtils} from "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 
 /// @title KaskadPriceOracle
-/// @notice TEE-backed price oracle. An enclave whose PCR0 matches the
-///         expected value (set at deploy) signs individual price updates
-///         with EIP-191; anyone can relay those updates to the chain. The
-///         per-asset quorum commitment is set by an `admin` key at deploy
-///         time via `registerAssets`. The admin role is purely a bootstrap
-///         / rotation authority: it cannot sign prices, cannot bypass the
-///         circuit breaker, cannot override the signer.
-contract KaskadPriceOracle {
+/// @notice TEE-backed price oracle. Enclave signers register via
+///         `registerEnclave(attestationDoc)`: a valid Nitro attestation
+///         matching `expectedPCR0` is required AND the call is `onlyOwner`
+///         (dual gate — closes the seal-and-leak vector where an attacker
+///         running identical-PCR infrastructure self-registers). The
+///         owner cannot whitelist a signer without a valid attestation;
+///         attestation alone is not sufficient. `removeSigner` is
+///         `onlyOwner` for emergency revocation. Quorum + price logic is
+///         unchanged.
+contract KaskadPriceOracle is Ownable2Step {
     using MessageHashUtils for bytes32;
 
     // ─── Types ───────────────────────────────────────────────────────────
 
     struct PriceData {
         uint256 price;           // fixed-point, 8 decimals
-        uint256 timestamp;       // block.timestamp at update (for consumers/Aave staleness checks)
-        uint256 signedTimestamp; // enclave exchange-server timestamp (for replay/ordering checks)
-        uint8   numSources;      // number of sources used
+        uint256 timestamp;       // block.timestamp at update (Aave staleness)
+        uint256 signedTimestamp; // enclave exchange-server timestamp (replay/order)
+        uint8   numSources;
         bytes32 sourcesHash;     // keccak256 commitment of source data
-        uint80  roundId;         // incrementing round counter
+        uint80  roundId;
     }
 
-    /// @notice Per-asset quorum parameter. Kept as a struct for future
-    ///         extensions (deviation / heartbeat) without a storage layout
-    ///         migration.
+    /// @notice Per-asset quorum. Struct kept for future extensions.
     struct AssetParams {
         uint8 minSources;
     }
 
     // ─── Immutable Config ────────────────────────────────────────────────
 
+    /// @notice PCR0 the enclave attestation must match. Pinned at deploy.
     bytes32 public immutable expectedPCR0;
+
+    /// @notice On-chain attestation verifier (Nitro CBOR/COSE/P-384 path).
     IAttestationVerifier public immutable verifier;
 
-    /// @notice Admin role for bootstrap operations (`registerAssets`).
-    ///         Transferable via `transferAdmin` — used to hand the role
-    ///         from the deploy-time EOA to a multisig after setup.
-    ///         Compromising this key lets the attacker re-submit quorum
-    ///         parameters but does NOT let them sign prices — that still
-    ///         requires the enclave key.
-    address public admin;
+    // ─── Constants ───────────────────────────────────────────────────────
 
-    uint8 public constant DECIMALS = 8;
+    uint8  public constant DECIMALS = 8;
     uint16 public constant MAX_PRICE_CHANGE_BPS = 1500; // 15% regular cap
+    uint16 public constant MAX_RESUME_CHANGE_BPS = 3000; // loosened cap after silence
+    /// @notice Window after which a stale `latestPrice` triggers
+    ///         `MAX_RESUME_CHANGE_BPS` instead of `MAX_PRICE_CHANGE_BPS`.
+    ///         1 h shrinks the attacker's wait-and-pounce window without
+    ///         imposing UX cost on honest pull-mode users: the relaxed
+    ///         regime still passes in a single transaction whenever it
+    ///         fires. The reason the relax exists at all is that pull-
+    ///         mode `latestPrice` lags natural inactivity AND real market
+    ///         dislocations; refusing to publish a >15 % move after a
+    ///         quiet hour would freeze the feed on every recovery from a
+    ///         brief outage.
+    uint256 public constant CIRCUIT_BREAKER_STALENESS = 1 hours;
 
-    /// @notice After `CIRCUIT_BREAKER_STALENESS` silence the circuit
-    ///         breaker loosens from 15 % to 30 %. Standard `numSources
-    ///         >= minSources` check still applies (top of `updatePrice`).
-    uint16 public constant MAX_RESUME_CHANGE_BPS = 3000;
-    uint256 public constant CIRCUIT_BREAKER_STALENESS = 4 hours;
-
-    /// @notice Reject a signed update whose enclave-authoritative
-    ///         `timestamp` (median of per-source server_time) is more than
-    ///         `MAX_FUTURE_SKEW` ahead of `block.timestamp`. A wide 2 h
-    ///         cap accommodates the Kasplex L2 / Kaspa upstream clock
-    ///         volatility (block.timestamp can run hours ahead of real
-    ///         wall clock during chain hiccups — the cap widens with
-    ///         it) while still blocking a bug / malformed signature
-    ///         that otherwise would freeze the monotonic-timestamp
-    ///         guard for years.
+    /// @notice Reject signed updates whose enclave-authoritative timestamp
+    ///         runs > 2h ahead of `block.timestamp`. Wide cap absorbs Kasplex
+    ///         L2 clock drift while still blocking far-future poison.
     uint256 public constant MAX_FUTURE_SKEW = 2 hours;
 
-    /// @notice Hard upper bound on the number of assets the admin may
-    ///         register in a single `registerAssets` call. The wipe loop
-    ///         iterates over the previous registered set, so without a
-    ///         cap a malicious or compromised admin could pre-load 5000+
-    ///         entries and turn every subsequent re-register into a
-    ///         block-gas-limit DoS (audit F-5). 32 is comfortably above
-    ///         realistic asset counts (Aave V3 mainnet runs 15-25) and
-    ///         keeps the wipe-loop bounded at ~32 SSTORE-to-zero refunds.
+    /// @notice Hard cap on assets per `registerAssets` call. Wipe loop is
+    ///         bounded; compromised owner cannot DoS via 5000-entry preload.
+    ///         Realistic Aave V3 asset counts are 15-25.
     uint256 public constant MAX_ASSETS = 32;
 
     // ─── State ───────────────────────────────────────────────────────────
 
-    /// @notice Grow-only set of enclave-attested signing addresses. A signer
-    ///         is added on the first `registerEnclave` call that recovers
-    ///         it from a valid PCR0-matching attestation. The set NEVER
-    ///         shrinks — there is no revoke function. Rationale: an
-    ///         attacker with a same-PCR attestation can add their own
-    ///         signer (they could do that anyway — the image is
-    ///         measured, not the builder), but cannot evict the legit
-    ///         signer. Both signers produce identical prices because
-    ///         they run identical measured code. A compromised key (off
-    ///         the stated threat model — requires breaking AWS Nitro
-    ///         isolation) requires redeploy with a new `expectedPCR0`.
+    /// @notice Whitelist of enclave-signing addresses. Populated by
+    ///         `registerEnclave` (attestation + onlyOwner). A signed price
+    ///         update is accepted iff the recovered ECDSA address is in
+    ///         this set. There is no direct `addSigner` — every signer
+    ///         must trace back to a verified attestation.
     mapping(address => bool) public validSigner;
 
-    /// @notice Count of addresses in `validSigner`. Used by
-    ///         `registerAssets` to refuse a pre-bootstrap admin call and
-    ///         to expose oracle-ready state to off-chain observers.
+    /// @notice Count of `validSigner` members. Gates `registerAssets` and
+    ///         is exposed for off-chain oracle-ready checks.
     uint256 public signerCount;
 
     mapping(bytes32 => PriceData) public latestPrices;
@@ -101,18 +88,16 @@ contract KaskadPriceOracle {
     mapping(bytes32 => uint80) public currentRound;
 
     /// @notice Per-asset quorum, keyed by keccak256(symbol). `minSources == 0`
-    ///         means the asset has NOT been registered and `updatePrice`
-    ///         for it will revert.
+    ///         means asset NOT registered and `updatePrice` reverts.
     mapping(bytes32 => AssetParams) public assetParams;
 
-    /// @notice Ordered list of currently-registered asset ids. Used to
-    ///         clear `assetParams` when the admin re-calls `registerAssets`
-    ///         with a different set.
+    /// @notice Ordered list of currently-registered asset ids.
     bytes32[] private _registeredAssetIds;
 
     // ─── Events ──────────────────────────────────────────────────────────
 
     event EnclaveRegistered(address indexed signer, bytes32 pcr0, uint256 timestamp);
+    event SignerRemoved(address indexed signer);
     event PriceUpdated(
         bytes32 indexed assetId,
         uint256 price,
@@ -120,8 +105,7 @@ contract KaskadPriceOracle {
         uint8   numSources,
         uint80  roundId
     );
-    event AssetsRegistered(address indexed admin, uint256 numAssets);
-    event AdminTransferred(address indexed previousAdmin, address indexed newAdmin);
+    event AssetsRegistered(address indexed owner, uint256 numAssets);
 
     // ─── Errors ──────────────────────────────────────────────────────────
 
@@ -138,51 +122,42 @@ contract KaskadPriceOracle {
     error AssetsEmpty();
     error MismatchedLengths();
     error InvalidMinSources();
-    error NotAdmin();
     error ZeroAddress();
+    error SignerNotRegistered(address signer);
     error FutureTimestamp(uint256 provided, uint256 maxAllowed);
     error TooManyAssets(uint256 provided, uint256 max);
     error NoRoundData(bytes32 assetId, uint80 roundId);
 
     // ─── Constructor ─────────────────────────────────────────────────────
 
-    constructor(bytes32 _expectedPCR0, address _verifier, address _admin) {
-        if (_admin == address(0) || _verifier == address(0)) revert ZeroAddress();
+    constructor(bytes32 _expectedPCR0, address _verifier, address initialOwner)
+        Ownable(initialOwner)
+    {
+        if (initialOwner == address(0)) revert ZeroAddress();
+        if (_verifier == address(0)) revert ZeroAddress();
         expectedPCR0 = _expectedPCR0;
         verifier = IAttestationVerifier(_verifier);
-        admin = _admin;
     }
 
-    modifier onlyAdmin() {
-        if (msg.sender != admin) revert NotAdmin();
-        _;
-    }
+    // ─── Enclave Registration (dual gate: attestation + owner) ───────────
 
-    // ─── Enclave Registration (permissionless, grow-only) ────────────────
-
-    /// @notice Register an enclave signer. Anyone can call — only a valid
-    ///         attestation with the expected PCR0 succeeds. Each first-
-    ///         time successful call ADDS the recovered address to the
-    ///         valid-signer set; re-registering the same address is a
-    ///         no-op.
-    ///
-    ///         Grow-only semantics close the grief-loop where an attacker
-    ///         with a valid same-PCR attestation would otherwise ping-
-    ///         pong `enclave.signer` and break legit relayer submissions.
-    ///         With a set, both signers are valid concurrently, and
-    ///         because they sign identical measured code they produce
-    ///         identical prices — the set membership is a permission
-    ///         token, not a price source.
-    function registerEnclave(bytes calldata attestationDoc) external {
+    /// @notice Register an enclave signer derived from a valid Nitro
+    ///         attestation. Two gates apply:
+    ///           (1) Attestation must verify on-chain and PCR0 must match
+    ///               the immutable `expectedPCR0`.
+    ///           (2) Caller must be the owner — closes seal-and-leak where
+    ///               a same-PCR attacker (e.g. identical EIF on their own
+    ///               AWS account without locked KMS) would otherwise add
+    ///               their own signer.
+    ///         Grow-only: re-registering an already-whitelisted signer
+    ///         is a no-op (no event, no count bump).
+    function registerEnclave(bytes calldata attestationDoc) external onlyOwner {
         (bool valid, bytes32 pcr0, address enclaveAddress) =
             verifier.verifyAttestation(attestationDoc);
 
         if (!valid) revert InvalidAttestation();
         if (pcr0 != expectedPCR0) revert PCR0Mismatch(pcr0, expectedPCR0);
 
-        // Idempotent add. Without this guard a spam caller could inflate
-        // `signerCount` and emit duplicate events for a no-op state
-        // change.
         if (!validSigner[enclaveAddress]) {
             validSigner[enclaveAddress] = true;
             signerCount += 1;
@@ -190,25 +165,25 @@ contract KaskadPriceOracle {
         }
     }
 
-    // ─── Asset-quorum registration (admin) ───────────────────────────────
-
-    /// @notice Hand the admin role to a new address. Used to transfer
-    ///         from the deploy-time EOA to a multisig after setup.
-    function transferAdmin(address newAdmin) external onlyAdmin {
-        if (newAdmin == address(0)) revert ZeroAddress();
-        emit AdminTransferred(admin, newAdmin);
-        admin = newAdmin;
+    /// @notice Revoke a previously-whitelisted signer. Emergency lever
+    ///         for decommissioned enclaves and key compromise. No
+    ///         attestation needed — subtractive operations are safe
+    ///         under the owner-trust model.
+    function removeSigner(address signer) external onlyOwner {
+        if (!validSigner[signer]) revert SignerNotRegistered(signer);
+        delete validSigner[signer];
+        signerCount -= 1;
+        emit SignerRemoved(signer);
     }
 
-    /// @notice Write the per-asset quorum commitment. Only callable by the
-    ///         admin key set at construction. `ids` MUST be strictly
-    ///         ascending (canonical order, no duplicates).
-    /// @param ids        keccak256("ETH/USD"), ..., sorted ascending
-    /// @param minSources per-asset quorum, each must be >= 1
+    // ─── Asset-quorum registration (owner) ───────────────────────────────
+
+    /// @notice Write the per-asset quorum commitment. `ids` MUST be
+    ///         strictly ascending (canonical order, no duplicates).
     function registerAssets(
         bytes32[] calldata ids,
         uint8[] calldata minSources
-    ) external onlyAdmin {
+    ) external onlyOwner {
         if (signerCount == 0) revert NoEnclaveRegistered();
         if (ids.length == 0) revert AssetsEmpty();
         if (ids.length > MAX_ASSETS) revert TooManyAssets(ids.length, MAX_ASSETS);
@@ -230,7 +205,6 @@ contract KaskadPriceOracle {
         emit AssetsRegistered(msg.sender, ids.length);
     }
 
-    /// @notice Ordered list of currently-registered asset ids.
     function registeredAssetIds() external view returns (bytes32[] memory) {
         return _registeredAssetIds;
     }
@@ -256,7 +230,7 @@ contract KaskadPriceOracle {
         _storePriceUpdate(assetId, price, timestamp, numSources, sourcesHash);
     }
 
-    // ─── updatePrice internals (split to avoid stack-too-deep) ───────────
+    // ─── updatePrice internals ───────────────────────────────────────────
 
     function _checkFreshnessAndBreaker(
         bytes32 assetId,
@@ -265,14 +239,6 @@ contract KaskadPriceOracle {
     ) internal view {
         PriceData storage current = latestPrices[assetId];
 
-        // Future-timestamp cap: prevents a single malformed/buggy
-        // signature with a far-future `timestamp` from poisoning the
-        // monotonic guard below and freezing the asset for years. Cap
-        // grows with `block.timestamp`, so if the L2 chain clock
-        // legitimately jumps forward the cap widens along with it —
-        // legit signed prices (from exchange server_time ≈ real wall
-        // clock) still pass. Only rejects timestamps that run > 2 h
-        // AHEAD of on-chain time.
         uint256 maxAllowed = block.timestamp + MAX_FUTURE_SKEW;
         if (timestamp > maxAllowed) revert FutureTimestamp(timestamp, maxAllowed);
 
@@ -296,10 +262,8 @@ contract KaskadPriceOracle {
         if (changeBps > limit) revert PriceChangeExceedsLimit(changeBps, limit);
     }
 
-    /// @dev Rebuilds the enclave's abi.encodePacked payload, applies
-    ///      EIP-191 via `MessageHashUtils.toEthSignedMessageHash`, recovers
-    ///      the signer, and reverts if it isn't a member of the valid-
-    ///      signer set.
+    /// @dev EIP-191 over abi.encodePacked(assetId,price,ts,nSrc,srcHash);
+    ///      recovered address must be in `validSigner`.
     function _verifyPriceSignature(
         bytes32 assetId,
         uint256 price,
@@ -356,21 +320,10 @@ contract KaskadPriceOracle {
         returns (uint256 price, uint256 timestamp, uint8 numSources)
     {
         PriceData storage data = priceHistory[assetId][roundId];
-        // Chainlink convention: revert on a non-existent round rather
-        // than return a zero-value tuple (audit F-6). Downstream
-        // KaskadAggregatorV3.getRoundData / .getAnswer / .getTimestamp
-        // propagate this revert; consumers that previously read
-        // `answer = 0` as a "free" price now get a clear failure
-        // they must handle.
         if (data.timestamp == 0) revert NoRoundData(assetId, roundId);
         return (data.price, data.timestamp, data.numSources);
     }
 
-    /// @notice Convenience alias for the public `validSigner` mapping.
-    ///         Off-chain clients verifying a signature should recover the
-    ///         ECDSA address locally and call this to check membership —
-    ///         there is no single "oracleSigner" anymore, the set may
-    ///         contain multiple addresses.
     function isValidSigner(address who) external view returns (bool) {
         return validSigner[who];
     }

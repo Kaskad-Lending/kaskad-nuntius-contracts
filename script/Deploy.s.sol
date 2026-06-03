@@ -121,18 +121,18 @@ contract Deploy is Script {
 
         //   0x0b43…6e45  ETH/USD
         //   0x4db2…8273  IGRA/USD
+        //   0x6bbc…2e96  TIBBIR/USD
         //   0x9187…3eb0  USDT/USD
         //   0xb445…5cd2  KAS/USD
         //   0xee62…6489  BTC/USD
         //   0xff06…b7ef  USDC/USD
-        //   0x6bbc…2e96  TIBBIR/USD
         ids[0] = keccak256("ETH/USD");    minSources[0] = 3;
         ids[1] = keccak256("IGRA/USD");   minSources[1] = 1;
-        ids[2] = keccak256("USDT/USD");   minSources[2] = 2;
-        ids[3] = keccak256("KAS/USD");    minSources[3] = 3;
-        ids[4] = keccak256("BTC/USD");    minSources[4] = 3;
-        ids[5] = keccak256("USDC/USD");   minSources[5] = 2;
-        ids[6] = keccak256("TIBBIR/USD"); minSources[6] = 2;
+        ids[2] = keccak256("TIBBIR/USD"); minSources[2] = 2;
+        ids[3] = keccak256("USDT/USD");   minSources[3] = 2;
+        ids[4] = keccak256("KAS/USD");    minSources[4] = 3;
+        ids[5] = keccak256("BTC/USD");    minSources[5] = 3;
+        ids[6] = keccak256("USDC/USD");   minSources[6] = 2;
     }
 
     // ─── Entrypoint ───────────────────────────────────────────────────────

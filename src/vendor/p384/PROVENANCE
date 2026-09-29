@@ -1,0 +1,9 @@
+Upstream: https://github.com/marlinprotocol/P384
+Revision: ad51e2115e39ee57bca3374f016ec563159c111d
+License: MIT (Copyright 2018 Leonid Logvinov); see LICENSE.
+
+Curve384.sol baseline: local Jacobian multiplication and hardened Strauss-Shamir verification patch.
+Baseline SHA-256: ed2cf927c87c851f0ec20edb11cbd01482f8978b283e3a4054bf622a1bc1fccb
+Local delta: reject public-key x or y >= p before field operations; update the _onCurve contract comment.
+
+FieldP384.sol, FieldO384.sol and LibMath.sol are unchanged from the upstream revision.

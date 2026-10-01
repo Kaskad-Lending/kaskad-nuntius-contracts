@@ -38,7 +38,13 @@ contract DeployLocal is Deploy {
 
     function _cacheCerts(IAttestationVerifier, bytes memory) internal override {}
 
-    function _validateEnv() internal override {}
+    /// @dev Mock verifier: refuse to run anywhere but a local devnet.
+    function _validateEnv() internal override {
+        require(
+            block.chainid == 31337 || block.chainid == 1337,
+            "DeployLocal: mock verifier, local chains only"
+        );
+    }
 
     function _assertExpectedSigner(IAttestationVerifier, bytes memory) internal override {}
 }

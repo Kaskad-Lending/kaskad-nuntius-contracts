@@ -1,22 +1,22 @@
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity ^0.8.20;
 
-import "./KaskadPriceOracle.sol";
+import {IKaskadPriceOracleRead} from "./IKaskadPriceOracleRead.sol";
 
 /// @title KaskadAggregatorV3
-/// @notice Chainlink IAggregatorV3Interface-compatible wrapper around KaskadPriceOracle.
+/// @notice Chainlink IAggregatorV3Interface-compatible wrapper around a Kaskad price oracle.
 /// @dev Deploy one instance per asset. Allows Aave V3 (and other protocols expecting
 ///      Chainlink-style oracles) to read Kaskad oracle prices without modifications.
 contract KaskadAggregatorV3 {
     error RoundIdOverflow(uint256 roundId);
-    KaskadPriceOracle public immutable oracle;
+    IKaskadPriceOracleRead public immutable oracle;
     bytes32 public immutable assetId;
     string public description;
     uint8 public constant decimals = 8;
     uint256 public constant version = 1;
 
     constructor(address _oracle, bytes32 _assetId, string memory _description) {
-        oracle = KaskadPriceOracle(_oracle);
+        oracle = IKaskadPriceOracleRead(_oracle);
         assetId = _assetId;
         description = _description;
     }

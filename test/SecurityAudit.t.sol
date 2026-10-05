@@ -380,7 +380,7 @@ contract SecurityAuditTest is Test {
     /// longer sweeps griefing donations into the caller's pocket.
     function test_REGRESSION_router_keeps_donated_tokens_on_liquidate() public {
         MinimalPool pool = new MinimalPool();
-        KaskadRouter router = new KaskadRouter(address(oracle), address(pool));
+        KaskadRouter router = new KaskadRouter(address(oracle), address(pool), address(0));
 
         MockToken debt = new MockToken("DEBT", "DEBT");
         MockToken collateral = new MockToken("COL", "COL");

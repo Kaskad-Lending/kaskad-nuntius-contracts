@@ -59,6 +59,10 @@ interface IKaskadStalenessChecker {
     function isAssetFresh(address asset) external view returns (bool);
 }
 
+interface IWETH {
+    function withdraw(uint256 amount) external;
+}
+
 /// @title KaskadRouter
 /// @notice Atomic price-update + Aave action in one TX. onBehalfOf is always
 ///         msg.sender. The freshness subject (caller for borrow/withdraw,
@@ -69,6 +73,7 @@ contract KaskadRouter is ReentrancyGuard {
 
     IKaskadPriceOracle public immutable oracle;
     IPool public immutable pool;
+    IWETH public immutable weth;
 
     bytes32 private constant SENDER_SLOT = keccak256("KaskadRouter.sender");
 
@@ -83,10 +88,19 @@ contract KaskadRouter is ReentrancyGuard {
 
     error PriceUpdateFailed(bytes32 assetId);
     error StaleAsset(address asset);
+    error UnexpectedEth(address from);
+    error EthTransferFailed(address to, uint256 amount);
 
-    constructor(address _oracle, address _pool) {
+    constructor(address _oracle, address _pool, address _weth) {
         oracle = IKaskadPriceOracle(_oracle);
         pool = IPool(_pool);
+        weth = IWETH(_weth);
+    }
+
+    /// @dev Only the unwrap payout from WETH is accepted; stray ETH is rejected
+    /// because the router holds no accounting for it.
+    receive() external payable {
+        if (msg.sender != address(weth)) revert UnexpectedEth(msg.sender);
     }
 
     function sender() external view returns (address s) {
@@ -130,6 +144,19 @@ contract KaskadRouter is ReentrancyGuard {
     function _requireFreshAsset(address asset) internal view {
         address sentinel = IPoolAddressesProvider(pool.ADDRESSES_PROVIDER()).getPriceOracleSentinel();
         if (!IKaskadStalenessChecker(sentinel).isAssetFresh(asset)) revert StaleAsset(asset);
+    }
+
+    function _sendEth(address to, uint256 amount) private {
+        (bool ok,) = to.call{value: amount}("");
+        if (!ok) revert EthTransferFailed(to, amount);
+    }
+
+    /// @notice Push signed prices and nothing else. Unlocks the direct-Pool
+    /// actions the router cannot wrap, above all
+    /// `setUserUseReserveAsCollateral(asset, false)`: Aave applies that flag to
+    /// `msg.sender` and takes no `onBehalfOf`, so it can never be delegated.
+    function pushPrices(PriceUpdate[] calldata prices) external nonReentrant {
+        _pushPrices(prices);
     }
 
     /// @notice Borrow `asset`. Requires debtToken.approveDelegation upfront.
@@ -196,5 +223,38 @@ contract KaskadRouter is ReentrancyGuard {
         if (postDebt > preDebt) {
             IERC20(debtAsset).safeTransfer(msg.sender, postDebt - preDebt);
         }
+    }
+
+    /// @notice Borrow WETH, unwrap, pay out ETH. Requires
+    /// variableDebtWETH.approveDelegation(router) upfront, exactly like
+    /// WrappedTokenGateway.
+    function borrowEthWithPrices(PriceUpdate[] calldata prices, uint256 amount, uint256 interestRateMode)
+        external
+        nonReentrant
+        withSender(msg.sender)
+    {
+        _pushPrices(prices);
+        _requireFreshAsset(address(weth));
+        pool.borrow(address(weth), amount, interestRateMode, 0, msg.sender);
+        weth.withdraw(amount);
+        _sendEth(msg.sender, amount);
+    }
+
+    /// @notice Withdraw WETH collateral as ETH. No freshness gate, same reason
+    /// as `withdrawWithPrices`: a user exit must not be blocked.
+    function withdrawEthWithPrices(PriceUpdate[] calldata prices, uint256 amount)
+        external
+        nonReentrant
+        withSender(msg.sender)
+    {
+        _pushPrices(prices);
+
+        address aToken = pool.getReserveData(address(weth)).aTokenAddress;
+        uint256 pullAmount = amount == type(uint256).max ? IERC20(aToken).balanceOf(msg.sender) : amount;
+        IERC20(aToken).safeTransferFrom(msg.sender, address(this), pullAmount);
+
+        uint256 got = pool.withdraw(address(weth), pullAmount, address(this));
+        weth.withdraw(got);
+        _sendEth(msg.sender, got);
     }
 }

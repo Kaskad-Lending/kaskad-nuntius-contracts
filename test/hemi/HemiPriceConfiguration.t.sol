@@ -43,6 +43,10 @@ contract HemiPriceConfigurationTest is Test {
     address private owner;
 
     function setUp() public {
+        if (!vm.envOr("HEMI_PRICE_FORK_TESTS", false)) {
+            vm.skip(true);
+            return;
+        }
         vm.createSelectFork(vm.envOr("HEMI_RPC_URL", string("https://testnet.rpc.hemi.network/rpc")));
         assertEq(block.chainid, 743111);
         owner = REGISTRY.owner();
@@ -86,6 +90,11 @@ contract HemiPriceConfigurationTest is Test {
     }
 
     function testHemiWithoutSignedFeedFailsClosed() public {
+        vm.mockCall(
+            address(REGISTRY),
+            abi.encodeWithSignature("latestPrices(bytes32)", keccak256("HEMI/USD")),
+            abi.encode(uint256(0), uint256(0), uint256(0), uint8(0), bytes32(0), uint80(0))
+        );
         vm.expectRevert(HemiNuntiusPriceAdapter.InvalidPrice.selector);
         AAVE.getAssetPrice(HEMI);
     }

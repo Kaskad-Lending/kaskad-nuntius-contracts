@@ -24,3 +24,6 @@ remappings = [
 ]
 
 # See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options
+
+[profile.hemi_prices]
+fs_permissions = [{ access = "read", path = "../scratchpad/hemi-prices" }]

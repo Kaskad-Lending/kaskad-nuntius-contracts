@@ -288,7 +288,7 @@ contract MockPool is IPool {
 
     function liquidationCall(address, address, address, uint256, bool) external {}
 
-    function getReserveData(address) external view returns (ReserveDataLegacy memory r) {
+    function getReserveData(address) external view virtual returns (ReserveDataLegacy memory r) {
         r.aTokenAddress = address(aWeth);
     }
 }

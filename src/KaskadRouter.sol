@@ -141,7 +141,7 @@ contract KaskadRouter is ReentrancyGuard {
 
     /// @dev Aave's in-band sentinel iterates `userConfig`, which does not yet
     ///      include the asset being borrowed — gate it explicitly.
-    function _requireFreshAsset(address asset) internal view {
+    function _requireFreshAsset(address asset) internal view virtual {
         address sentinel = IPoolAddressesProvider(pool.ADDRESSES_PROVIDER()).getPriceOracleSentinel();
         if (!IKaskadStalenessChecker(sentinel).isAssetFresh(asset)) revert StaleAsset(asset);
     }

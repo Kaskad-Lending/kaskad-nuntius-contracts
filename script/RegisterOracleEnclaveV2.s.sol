@@ -35,7 +35,9 @@ contract RegisterOracleEnclaveV2 is Script {
     error TooManyAssets(uint256 provided, uint256 max);
 
     function run() external {
-        if (block.chainid != 4663 && block.chainid != 46630) revert WrongChain(block.chainid);
+        if (block.chainid != 4663 && block.chainid != 46630 && block.chainid != 38833) {
+            revert WrongChain(block.chainid);
+        }
 
         KaskadPriceOracleV2 oracle = KaskadPriceOracleV2(vm.envAddress("ORACLE"));
         bytes memory doc = vm.envBytes("GENESIS_DOC");

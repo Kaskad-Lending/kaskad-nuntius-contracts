@@ -43,7 +43,7 @@ If you cloned without `--recursive`, run `git submodule update --init --recursiv
 
 ## Deploy on Robinhood Chain
 
-The enclave image has the oracle's address built in, and the oracle pins the image's PCR0. To break the cycle, the oracle address is predicted from the deployer's nonce before the image is built. `DeployOracleV2` and `RegisterOracleEnclaveV2` run only on Robinhood Chain (`4663`) and its testnet (`46630`).
+The enclave image has the oracle's address built in, and the oracle pins the image's PCR0. To break the cycle, the oracle address is predicted from the deployer's nonce before the image is built. `DeployOracleV2` runs only on Robinhood Chain (`4663`) and its testnet (`46630`); `RegisterOracleEnclaveV2` also runs on Igra (`38833`).
 
 1. **Predict the oracle address.** `script/PredictOracleAddress.s.sol` computes, from the deployer's current nonce, the address at which `DeployOracleV2` will create the oracle. The deployer must send no other transaction before step 3.
 
@@ -99,6 +99,14 @@ forge script script/DeployLocal.s.sol --rpc-url http://127.0.0.1:8545 --broadcas
 ```
 
 The key is anvil's first default account.
+
+### V2 oracle on Igra
+
+The V2 stack registers the enclave that already signs for Robinhood Chain, so its address is not baked into the image.
+
+1. `script/DeployOracleV2Igra.s.sol` deploys the attestation verifier and `KaskadPriceOracleV2` pinned to `EXPECTED_PCR0`. `ORACLE_OWNER` defaults to the Igra Safe.
+2. `script/RegisterOracleEnclaveV2.s.sol` with `DIRECT_REGISTER=false` stores the certificate chain and prints the Safe's `registerEnclave` and `registerAssets` calldata.
+3. `script/DeployIgraAggregators.s.sol` deploys `KaskadStalenessGatedAggregatorV3` for the five reserves over `KASKAD_PRICE_ORACLE` and prints the Safe's `AaveOracle.setAssetSources` calldata. The aggregator's `latestAnswer()` reverts once the price is older than the staleness checker's `maxStaleness()`.
 
 ## Layout
 
